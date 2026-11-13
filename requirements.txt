@@ -1,4 +1,6 @@
-git+https://github.com/DoctorJew/imvu.py.git
-yt-dlp
+requests
+aiohttp
+websockets
 google-generativeai
+yt-dlp
 flask

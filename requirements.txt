@@ -1,4 +1,4 @@
-git+https://github.com
+git+https://github.com/DoctorJew/imvu.py.git
 yt-dlp
 google-generativeai
 flask

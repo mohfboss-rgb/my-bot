@@ -4,3 +4,4 @@ websockets
 google-generativeai
 yt-dlp
 flask
+imvu.py

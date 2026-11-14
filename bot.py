@@ -19,52 +19,58 @@ if GEMINI_API_KEY:
 def clean_room_id(raw_id):
     val = str(raw_id).strip()
     if "room-" in val:
-        val = val.split("room-")[-1].split("-")
+        val = val.split("room-")[-1].split("-")[0]
     return val
 
-vip_rooms = {}
-active_rooms = set()
+# إعدادات الغرف والمميزات
+rooms_db = {}
+room_members = {}
+song_queues = {}
+custom_replies = {"هلا": "هلا بك منور الروم يا {user} 🌹"}
+
 if DEFAULT_ROOM:
-    r_clean = clean_room_id(DEFAULT_ROOM)
-    if r_clean:
-        active_rooms.add(r_clean)
+    r0 = clean_room_id(DEFAULT_ROOM)
+    if r0:
+        rooms_db[r0] = {
+            "active": True, "dj_only": False, "host": "", "mods": [],
+            "welcome_on": True, "welcome_msg": "🌟 Welcome {user} to the room!",
+            "shield_on": False, "current_song": "لا يوجد"
+        }
 
-bot_state = {"logged_in": False, "log": "جاري الاتصال كـ تطبيق موبايل...", "current_song": "لا يوجد", "connected_rooms": []}
+bot_state = {"logged_in": False, "log": "جاري الاتصال بالسيرفر...", "cid": ""}
 
-def search_youtube_song(query):
+def search_yt(query, limit=1):
     try:
         with yt_dlp.YoutubeDL({"format": "bestaudio", "noplaylist": True, "quiet": True}) as ydl:
-            entries = ydl.extract_info(f"ytsearch1:{query}", download=False).get("entries", [])
-            if entries:
-                return entries.get("title", query), entries.get("webpage_url", "")
+            entries = ydl.extract_info(f"ytsearch{limit}:{query}", download=False).get("entries", [])
+            return [{"title": e.get("title", ""), "url": e.get("webpage_url", "")} for e in entries if e]
     except Exception:
-        pass
-    return None, None
+        return []
 
 def ask_gemini(prompt):
     if not ai_model:
         return "مفتاح الذكاء الاصطناعي غير مضاف."
     try:
-        res = ai_model.generate_content("أنت بوت ذكي وممتع في غرفة IMVU. رد بالعربية باختصار ولباقة: " + prompt)
+        res = ai_model.generate_content("أنت بوت موسيقى ومشرف ذكي في IMVU. رد بالعربية باختصار ولباقة: " + prompt)
         return res.text.strip()
     except Exception:
         return "حاول مرة أخرى بعد قليل."
 
-def can_use_bot(room_id, sender_name):
-    sub = vip_rooms.get(str(room_id))
-    if not sub or not sub.get("active"):
+def is_allowed(rid, sender):
+    cfg = rooms_db.get(rid)
+    if not cfg or not cfg["active"]:
+        return False
+    if not cfg["dj_only"]:
         return True
-    allowed = [sub["host"].lower()] + [m.lower() for m in sub["mods"]]
-    return sender_name.lower() in allowed
+    allowed = [cfg["host"].lower()] + [m.lower() for m in cfg["mods"]]
+    return sender.lower() in allowed
 
-class MobileIMVUBot:
+class ProIMVUBot:
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": "IMVU/9.12.0 (Android 13; SM-S918B) okhttp/4.11.0",
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "X-IMVU-Application": "imvu_mobile_android"
+            "Accept": "application/json", "Content-Type": "application/json"
         })
         self.cid = None
         self.sauce = None
@@ -74,114 +80,133 @@ class MobileIMVUBot:
             bot_state["log"] = "بيانات الحساب ناقصة في Render"
             return False
         try:
-            payload = {
-                "username": BOT_USERNAME,
-                "password": BOT_PASSWORD,
-                "gdpr_cookie_consent": True
-            }
-            resp = self.session.post("https://imvu.com", json=payload, timeout=15)
+            resp = self.session.post("https://imvu.com", json={"username": BOT_USERNAME, "password": BOT_PASSWORD}, timeout=15)
+            if resp.status_code == 429:
+                bot_state["log"] = "حظر مؤقت (429) - سينتظر البوت 10 دقائق تلقائياً"
+                return "429"
             if not resp.text.strip().startswith("{"):
-                bot_state["log"] = f"رد غير متوقع من السيرفر (كود {resp.status_code})"
+                bot_state["log"] = f"رد غير متوقع ({resp.status_code})"
                 return False
             data = resp.json()
             if data.get("status") == "success":
                 u = data["denormalized"][data["id"]]["data"]
-                self.cid = u["user"]["id"]
-                self.sauce = u["sauce"]
-                bot_state["logged_in"] = True
-                bot_state["log"] = f"متصل بنجاح! (ID: {self.cid})"
+                self.cid, self.sauce = str(u["user"]["id"]), u["sauce"]
+                bot_state["logged_in"], bot_state["cid"] = True, self.cid
+                bot_state["log"] = f"متصل وجاهز بالروم (CID: {self.cid})"
                 return True
-            bot_state["log"] = f"رسالة اللعبة: {data.get('message', 'تحقق من الاسم وكلمة المرور')}"
+            bot_state["log"] = f"رسالة اللعبة: {data.get('message', 'تحقق من الحساب')}"
             return False
         except Exception as e:
             bot_state["log"] = f"خطأ اتصال: {e}"
             return False
 
     async def run_ws(self):
-        if not self.login():
+        st = self.login()
+        if st == "429":
+            await asyncio.sleep(600)
+            return
+        if not st:
             return
         try:
             async with websockets.connect("wss://://imvu.com") as ws:
-                await ws.send(json.dumps({"type": "imq_connect", "user_id": str(self.cid), "sauce": self.sauce}))
+                await ws.send(json.dumps({"type": "imq_connect", "user_id": self.cid, "sauce": self.sauce}))
                 await asyncio.sleep(1)
                 joined = set()
                 while True:
-                    for r_id in list(active_rooms):
-                        if r_id not in joined:
-                            ch = f"imvu:room:{r_id}"
+                    for rid, cfg in list(rooms_db.items()):
+                        if cfg["active"] and rid not in joined:
+                            ch = f"imvu:room:{rid}"
                             await ws.send(json.dumps({"type": "imq_join", "channel": ch}))
-                            joined.add(r_id)
-                            bot_state["connected_rooms"] = list(joined)
-                            mode_msg = "👑 وضع VIP (للهوست والمشرفين)" if vip_rooms.get(r_id, {}).get("active") else "🎉 وضع عام (مفتوح للكل)"
-                            await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": f"🤖 تم تفعيل البوت الذكي! {mode_msg}"}))
+                            joined.add(rid)
+                            room_members.setdefault(rid, {})
+                            song_queues.setdefault(rid, [])
+                            await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": "🎵 تم تفعيل البوت الذكي بنجاح!"}))
                     try:
                         raw = await asyncio.wait_for(ws.recv(), timeout=3.0)
                     except asyncio.TimeoutError:
                         continue
-                    msg_data = json.loads(raw)
-                    text = msg_data.get("message", "").strip()
-                    sender_id = str(msg_data.get("user_id", ""))
-                    sender_name = str(msg_data.get("username", sender_id))
-                    channel = msg_data.get("channel", "")
-                    if not text or sender_id == str(self.cid) or not channel.startswith("imvu:room:"):
+                    msg = json.loads(raw)
+                    mtype = msg.get("type", "")
+                    ch = msg.get("channel", "")
+                    rid = ch.replace("imvu:room:", "") if ch.startswith("imvu:room:") else ""
+                    uid = str(msg.get("user_id", ""))
+                    uname = str(msg.get("username", uid))
+                    if not rid or not uid or uid == self.cid:
                         continue
-                    room_id = channel.replace("imvu:room:", "")
-                    if not can_use_bot(room_id, sender_name):
+
+                    room_members.setdefault(rid, {})
+                    cfg = rooms_db.get(rid, {})
+
+                    # رصد الدخول والخروج والترحيب التلقائي
+                    if mtype in ["imq_user_join", "imq_join"] and uid not in room_members[rid]:
+                        room_members[rid][uid] = uname
+                        if cfg.get("shield_on") and uname.lower().startswith("guest_"):
+                            await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": f"🛡️ تم حظر الحساب الوهمي {uname}"}))
+                            continue
+                        if cfg.get("welcome_on"):
+                            w_txt = cfg.get("welcome_msg", "Welcome {user}").replace("{user}", uname)
+                            await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": w_txt}))
+                    elif mtype in ["imq_user_leave", "imq_leave"]:
+                        room_members[rid].pop(uid, None)
+                    else:
+                        room_members[rid][uid] = uname
+
+                    text = msg.get("message", "").strip()
+                    if not text:
                         continue
-                    if text.startswith("!شغل ") or text.startswith("!play "):
-                        q = text.split(" ", 1).strip()
-                        title, link = search_youtube_song(q)
-                        reply = f"🎶 {title} | {link}" if title else "❌ لم أجد الأغنية."
-                        if title:
-                            bot_state["current_song"] = title
-                        await ws.send(json.dumps({"type": "imq_send", "channel": channel, "message": reply}))
+
+                    # الردود التلقائية المخصصة
+                    for trigger, rep in custom_replies.items():
+                        if trigger in text:
+                            await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": rep.replace("{user}", uname)}))
+                            break
+
+                    if not is_allowed(rid, uname):
+                        continue
+
+                    # أوامر الموسيقى والذكاء الاصطناعي
+                    if text.startswith("!play ") or text.startswith("!شغل "):
+                        q = text.split(" ", 1)[1].strip()
+                        res = search_yt(q, 1)
+                        if res:
+                            song = res[0]
+                            cfg["current_song"] = song["title"]
+                            song_queues[rid].append(song["title"])
+                            await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": f"🎶 تعمل الآن: {song['title']} | {song['url']}"}))
+                        else:
+                            await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": "❌ لم أجد الأغنية."}))
+                    elif text in ["!stop", "!وقف"]:
+                        cfg["current_song"] = "متوقف"
+                        await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": "⏹️ تم إيقاف الموسيقى."}))
+                    elif text in ["!next", "!تخطي"]:
+                        if len(song_queues[rid]) > 1:
+                            song_queues[rid].pop(0)
+                            cfg["current_song"] = song_queues[rid][0]
+                            await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": f"⏭️ التالي: {cfg['current_song']}"}))
+                    elif text in ["!queue", "!انتظار"]:
+                        q_list = " | ".join(song_queues[rid][:5]) or "القائمة فارغة"
+                        await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": f"📜 الانتظار: {q_list}"}))
                     elif text.startswith("!بوت ") or text.startswith("بوت "):
-                        ai_ans = ask_gemini(text.split(" ", 1).strip())
-                        await ws.send(json.dumps({"type": "imq_send", "channel": channel, "message": ai_ans}))
+                        ans = ask_gemini(text.split(" ", 1)[1].strip())
+                        await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": ans}))
         except Exception:
             bot_state["logged_in"] = False
-            bot_state["connected_rooms"] = []
             bot_state["log"] = "إعادة محاولة الاتصال..."
 
 def worker():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    bot = MobileIMVUBot()
+    bot = ProIMVUBot()
     while True:
         loop.run_until_complete(bot.run_ws())
-        time.sleep(15)
+        time.sleep(60)
 
 threading.Thread(target=worker, daemon=True).start()
 
-HTML = """<!DOCTYPE html><html dir="rtl"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>بوت IMVU</title><style>body{font-family:Tahoma;background:#0f172a;color:#fff;text-align:center;padding:15px}.box{background:#1e293b;padding:15px;border-radius:10px;max-width:450px;margin:10px auto}input,button{width:90%;padding:10px;margin:5px 0;border-radius:6px;border:none}input{background:#334155;color:#fff}button{background:#2563eb;color:#fff;font-weight:bold}</style></head><body><div class="box"><h2>🤖 لوحة البوت الذكي</h2><p>الحالة: <b>{{state.log}}</b></p><p>الغرف: <b>{{state.connected_rooms|join(', ') or 'لا يوجد'}}</b></p>{% if msg %}<p style="color:#38bdf8">{{msg}}</p>{% endif %}</div><div class="box"><h3>إدارة الغرف والاشتراكات</h3><form method="POST" action="/sub"><input type="password" name="sec" placeholder="كلمة سر المالك" required><input type="text" name="rid" placeholder="رقم الروم" required><input type="text" name="host" placeholder="اسم الهوست (اتركه فارغاً ليبقى للكل)"><input type="text" name="mods" placeholder="المشرفين بفاصلة (للاشتراك الخاص)"><button name="act" value="vip">تفعيل اشتراك VIP (للهوست والمشرفين)</button><button name="act" value="free" style="background:#16a34a">إدخال البوت مجاناً (مفتوح للكل)</button><button name="act" value="del" style="background:#dc2626">إلغاء الاشتراك (يعود للكل)</button></form></div></body></html>"""
-
-@app.route("/")
-def index():
-    return render_template_string(HTML, state=bot_state, msg=None)
-
-@app.route("/sub", methods=["POST"])
-def sub():
-    if request.form.get("sec") != ADMIN_SECRET:
-        return render_template_string(HTML, state=bot_state, msg="⛔ كلمة سر خاطئة!")
-    rid = clean_room_id(request.form.get("rid", ""))
-    act = request.form.get("act")
-    if act == "vip" and rid:
-        active_rooms.add(rid)
-        mods = [m.strip() for m in request.form.get("mods", "").split(",") if m.strip()]
-        vip_rooms[rid] = {"host": request.form.get("host", "").strip(), "mods": mods, "active": True}
-        m = f"👑 تم تفعيل اشتراك VIP للروم {rid} (للهوست والمشرفين فقط)"
-    elif act == "free" and rid:
-        active_rooms.add(rid)
-        vip_rooms.pop(rid, None)
-        m = f"🎉 تم إدخال البوت للروم {rid} بوضع مفتوح للكل"
-    else:
-        vip_rooms.pop(rid, None)
-        m = f"🔓 تم إلغاء اشتراك VIP للروم {rid} وعاد مفتوحاً للكل"
-    return render_template_string(HTML, state=bot_state, msg=m)
-
-@app.route("/ping")
-def ping():
-    return "OK", 200
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+HTML = """<!DOCTYPE html><html dir="rtl"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>لوحة تحكم البوت</title>
+<style>
+body{font-family:Tahoma,sans-serif;background:#090d16;color:#f1f5f9;margin:0;padding:12px;text-align:center}
+.card{background:linear-gradient(145deg,#131b2e,#0f1626);border:1px solid #1e293b;border-radius:16px;padding:16px;max-width:460px;margin:12px auto;box-shadow:0 8px 20px rgba(0,0,0,.4)}
+.badge{display:inline-block;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:bold;background:#064e3b;color:#34d399}
+.badge.off{background:#450a0a;color:#f87171}
+              

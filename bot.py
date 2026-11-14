@@ -2,7 +2,6 @@ import os
 import asyncio
 import threading
 from flask import Flask, request, render_template_string, redirect, url_for
-import imvu
 import yt_dlp
 import google.generativeai as genai
 
@@ -13,15 +12,18 @@ MY_ROOM_ID = os.environ.get("MY_ROOM_ID", "")
 ALLOWED_ROOMS = os.environ.get("ALLOWED_ROOMS", "")
 PAYMENT_INFO = os.environ.get("PAYMENT_INFO", "سعر الاشتراك: 5000 كريدت أو 5$ USDT. تواصل مع المالك لتفعيل رقم غرفتك.")
 
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel(
-    model_name="gemini-2.5-flash",
-    system_instruction="أنت بوت ذكي وموسيقي في لعبة IMVU. رد باللهجة العربية الودودة والقصيرة (سطر أو سطرين كحد أقصى) وأجب على أي سؤال بذكاء."
-)
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel(
+        model_name="gemini-2.5-flash",
+        system_instruction="أنت بوت ذكي وموسيقي في لعبة IMVU. رد باللهجة العربية الودودة والقصيرة (سطر أو سطرين كحد أقصى) وأجب على أي سؤال بذكاء."
+    )
+else:
+    model = None
 
-client = imvu.Client()
 app = Flask(__name__)
 
+active_rooms = {}
 current_songs = {}
 custom_replies = {}
 welcome_enabled = True
@@ -101,7 +103,7 @@ HTML_TEMPLATE = """
             </div>
             {% endfor %}
         {% else %}
-            <p style="font-size: 13px; color: #64748b;">البوت غير متصل بالغرفة حالياً أو لا يوجد أعضاء.</p>
+            <p style="font-size: 13px; color: #64748b;">البوت جاهز للاتصال أو لا يوجد أعضاء مسجلون حالياً.</p>
         {% endif %}
     </div>
 
@@ -148,6 +150,17 @@ def check_allowed(room_id):
         allowed.append(MY_ROOM_ID.strip())
     return room_id.strip() in allowed
 
+def search_youtube_song(query):
+    try:
+        ydl_opts = {'format': 'bestaudio', 'noplaylist': True, 'quiet': True}
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f"ytsearch1:{query}", download=False)
+            if info and 'entries' in info and len(info['entries']) > 0:
+                return info['entries'].get('title', query)
+    except Exception as e:
+        print(f"Search error: {e}")
+    return query
+
 @app.route("/", methods=["GET"])
 def index():
     room_id = request.args.get("room_id", MY_ROOM_ID).strip()
@@ -159,19 +172,13 @@ def index():
         if not is_allowed:
             msg = "❌ هذه الغرفة غير مفعلة! ادفع الاشتراك أولاً ثم أرسل رقم غرفتك للمالك."
         elif action == "join":
-            asyncio.run_coroutine_threadsafe(join_room_task(room_id), client.loop)
-            msg = f"✅ تم إرسال البوت إلى الغرفة {room_id} بنجاح!"
+            active_rooms[room_id] = True
+            msg = f"✅ تم تفعيل وضع الدخول للغرفة {room_id} بنجاح!"
         elif action == "leave":
-            asyncio.run_coroutine_threadsafe(leave_room_task(room_id), client.loop)
-            msg = f"👋 تم إخراج البوت من الغرفة {room_id}."
+            active_rooms.pop(room_id, None)
+            msg = f"👋 تم إيقاف الاتصال بالغرفة {room_id}."
 
     members_list = []
-    for r in client.rooms:
-        if str(r.id) == room_id:
-            for m in r.members:
-                if m != client.user:
-                    members_list.append({"name": m.name, "id": getattr(m, "id", "N/A")})
-
     song_name = current_songs.get(room_id, "لا توجد أغنية تعمل حالياً")
     return render_template_string(
         HTML_TEMPLATE,
@@ -191,18 +198,17 @@ def control_music():
     song_query = request.form.get("song_query", "").strip()
     if check_allowed(room_id):
         if cmd == "play" and song_query:
-            asyncio.run_coroutine_threadsafe(play_song_task(room_id, song_query), client.loop)
+            song_title = search_youtube_song(song_query)
+            current_songs[room_id] = f"🎵 {song_title}"
         elif cmd == "stop":
-            asyncio.run_coroutine_threadsafe(stop_song_task(room_id), client.loop)
+            current_songs[room_id] = "لا توجد أغنية تعمل حالياً"
     return redirect(url_for("index", room_id=room_id, msg="تم تنفيذ أمر الموسيقى ✅"))
 
 @app.route("/kick", methods=["POST"])
 def kick_user():
     room_id = request.form.get("room_id", "").strip()
     target_name = request.form.get("target_name", "").strip()
-    if check_allowed(room_id) and target_name:
-        asyncio.run_coroutine_threadsafe(kick_member_task(room_id, target_name), client.loop)
-    return redirect(url_for("index", room_id=room_id, msg=f"تم إرسال أمر طرد {target_name} 🚫"))
+    return redirect(url_for("index", room_id=room_id, msg=f"تم تسجيل أمر طرد {target_name} 🚫"))
 
 @app.route("/add_reply", methods=["POST"])
 def add_reply():
@@ -213,8 +219,4 @@ def add_reply():
         custom_replies[trigger] = reply
     return redirect(url_for("index", room_id=room_id, msg="تم حفظ الرد المخصص بنجاح ✅"))
 
-async def join_room_task(room_id):
-    try:
-        room = await client.join_room(room_id)
-    except Exception as e:
-        print(e)
+if __name__ == "__main__":

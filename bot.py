@@ -217,4 +217,4 @@ async def join_room_task(room_id):
     try:
         room = await client.join_room(room_id)
     except Exception as e:
-    print(e)
+        print(e)

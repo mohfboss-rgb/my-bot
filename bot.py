@@ -8,7 +8,7 @@ USER = os.environ.get("BOT_USERNAME", "")
 PASS = os.environ.get("BOT_PASSWORD", "")
 KEY = os.environ.get("GEMINI_API_KEY", "")
 SEC = os.environ.get("ADMIN_SECRET", "12345")
-DEF_R = os.environ.get("MY_ROOM_ID", "").split("room-")[-1].split("-")[0].strip()
+DEF_R = os.environ.get("MY_ROOM_ID", "").split("room-")[-1].split("-").strip()
 
 if KEY:
     genai.configure(api_key=KEY)
@@ -18,25 +18,21 @@ else:
 
 rooms = {DEF_R: {"dj": False, "shield": False, "host": "", "oid": "", "mods": [], "song": "لا يوجد", "q": []}} if DEF_R else {}
 members = {}
-state = {"log": "جاري الاتصال...", "welcome": "🌟 !Welcome {user} to the room"}
+state = {"log": "جاري الاتصال بالسيرفر...", "welcome": "🌟 !Welcome {user} to the room"}
 
 def yt(q):
     try:
         with yt_dlp.YoutubeDL({"format": "bestaudio", "noplaylist": True, "quiet": True}) as y:
             e = y.extract_info(f"ytsearch1:{q}", download=False).get("entries", [])
-            return (e[0]["title"], e[0]["webpage_url"]) if e else (None, None)
+            return (e["title"], e["webpage_url"]) if e else (None, None)
     except Exception:
         return None, None
 
 def ask_smart_ai(uname, text):
     if not ai:
-        return "مفتاح الذكاء الاصطناعي غير مفعل حالياً."
+        return "مفتاح الذكاء الاصطناعي غير مفعل."
     try:
-        prompt = (
-            f"أنت بوت ذكي، خفيف الظل، وودود جداً داخل غرفة دردشة في لعبة IMVU. "
-            f"اللاعب ({uname}) يقول لك: '{text}'. "
-            f"رد عليه باللهجة العربية المحببة وبذكاء ولباقة (في سطر أو سطرين كحد أقصى ليناسب شات اللعبة):"
-        )
+        prompt = f"أنت بوت ذكي وودود في غرفة IMVU. اللاعب ({uname}) يقول: '{text}'. رد بالعربية باختصار ولباقة (سطرين كحد أقصى):"
         return ai.generate_content(prompt).text.strip()
     except Exception:
         return "تسلم يا غالي! 🌹"
@@ -44,25 +40,33 @@ def ask_smart_ai(uname, text):
 class Bot:
     def __init__(self):
         self.s = requests.Session()
-        self.s.headers.update({"User-Agent": "IMVU/9.12.0 (Android 13)", "Content-Type": "application/json"})
+        self.s.headers.update({
+            "User-Agent": "IMVU/9.12.0 (Android 13; SM-S918B) okhttp/4.11.0",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "X-IMVU-Application": "imvu_mobile_android"
+        })
 
     def login(self):
         if not USER or not PASS:
             state["log"] = "بيانات الحساب ناقصة في Render"
             return None, None
         try:
-            r = self.s.post("https://imvu.com", json={"username": USER, "password": PASS}, timeout=15)
+            r = self.s.post("https://imvu.com", json={"username": USER, "password": PASS, "gdpr_cookie_consent": True}, timeout=15)
             if r.status_code == 429:
-                state["log"] = "حظر مؤقت 429 - سينتظر البوت 10 دقائق"
+                state["log"] = "حظر مؤقت 429 - سينتظر البوت 10 دقائق تلقائياً"
                 return "429", None
+            if not r.text.strip().startswith("{"):
+                state["log"] = f"حماية السيرفر (كود {r.status_code}) - سيحاول البوت تلقائياً"
+                return None, None
             d = r.json()
             if d.get("status") == "success":
                 u = d["denormalized"][d["id"]]["data"]
                 state["log"] = f"متصل وجاهز بالروم (CID: {u['user']['id']})"
                 return str(u["user"]["id"]), u["sauce"]
-            state["log"] = d.get("message", "خطأ في بيانات الحساب")
+            state["log"] = d.get("message", "تحقق من اسم المستخدم وكلمة المرور")
         except Exception as e:
-            state["log"] = f"خطأ: {e}"
+            state["log"] = f"خطأ اتصال: {e}"
         return None, None
 
     async def run(self):
@@ -72,7 +76,7 @@ class Bot:
                 await asyncio.sleep(600)
                 continue
             if not cid:
-                await asyncio.sleep(60)
+                await asyncio.sleep(120)
                 continue
             try:
                 async with websockets.connect("wss://://imvu.com") as ws:
@@ -114,14 +118,14 @@ class Bot:
                         if txt.startswith(("!play ", "!شغل ")):
                             if cfg.get("dj") and uname.lower() not in [cfg.get("host", "").lower()] + cfg.get("mods", []):
                                 continue
-                            t, u = yt(txt.split(" ", 1)[1])
+                            t, u = yt(txt.split(" ", 1))
                             if t:
                                 cfg["song"] = t
                                 cfg.setdefault("q", []).append(t)
                             await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": f"🎶 {t} | {u}" if t else "❌ لم أجدها"}))
                         elif txt in ["!next", "!تخطي"] and len(cfg.get("q", [])) > 1:
                             cfg["q"].pop(0)
-                            cfg["song"] = cfg["q"][0]
+                            cfg["song"] = cfg["q"]
                             await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": f"⏭️ التالي: {cfg['song']}"}))
                         elif txt in ["!queue", "!انتظار"]:
                             ql = " | ".join(cfg.get("q", [])[:5]) or "فارغة"
@@ -130,7 +134,7 @@ class Bot:
                             cfg["song"] = "متوقف"
                             await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": "⏹️ تم الإيقاف"}))
                         elif txt.startswith(("!hug", "!kiss")):
-                            tg = txt.split(" ", 1)[1] if " " in txt else "الجميع"
+                            tg = txt.split(" ", 1) if " " in txt else "الجميع"
                             ac = "حضن دافئ لـ" if txt.startswith("!hug") else "قبلة لـ"
                             await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": f"💖 {uname} أرسل {ac} {tg}!"}))
                         elif any(w in txt.lower() for w in ["بوت", "bot", "؟", "?"]):
@@ -138,7 +142,7 @@ class Bot:
                             await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": ans}))
             except Exception:
                 state["log"] = "إعادة الاتصال..."
-                await asyncio.sleep(30)
+                await asyncio.sleep(60)
 
 threading.Thread(target=lambda: asyncio.run(Bot().run()), daemon=True).start()
 
@@ -150,7 +154,7 @@ def index():
 def add():
     if request.form.get("s") != SEC:
         return render_template("index.html", state=state, rooms=rooms, members=members, msg="⛔ كلمة سر خاطئة")
-    r = request.form.get("r", "").split("room-")[-1].split("-")[0].strip()
+    r = request.form.get("r", "").split("room-")[-1].split("-").strip()
     if r:
         rooms[r] = {"dj": "dj" in request.form, "shield": "shield" in request.form, "oid": request.form.get("oid", "").strip(), "host": request.form.get("h", "").strip(), "mods": [x.strip().lower() for x in request.form.get("m", "").split(",") if x.strip()], "song": "لا يوجد", "q": []}
     return render_template("index.html", state=state, rooms=rooms, members=members, msg=f"✅ تم تفعيل الروم {r}")
@@ -175,4 +179,4 @@ def ping():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
-            
+                                                                     

@@ -158,7 +158,8 @@ def index():
 def add():
     if request.form.get("s") != SEC:
         return render_template("index.html", state=state, rooms=rooms, members=members, msg="⛔ كلمة سر خاطئة")
-    r = request.form.get("r", "").split("room-")[-1].split("-").strip()
+    r = request.form.get("r", "").split("room-")[-1].strip()
+
     if r:
         rooms[r] = {"dj": "dj" in request.form, "shield": "shield" in request.form, "oid": request.form.get("oid", "").strip(), "host": request.form.get("h", "").strip(), "mods": [x.strip().lower() for x in request.form.get("m", "").split(",") if x.strip()], "song": "لا يوجد", "q": []}
     return render_template("index.html", state=state, rooms=rooms, members=members, msg=f"✅ تم تفعيل الروم {r}")

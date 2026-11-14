@@ -22,8 +22,7 @@ state = {"log": "جاري الاتصال بالسيرفر...", "welcome": "🌟 
 
 def yt(q):
     try:
-        opts = {"format": "bestaudio", "noplaylist": True, "quiet": True}
-        with yt_dlp.YoutubeDL(opts) as y:
+        with yt_dlp.YoutubeDL({"format": "bestaudio", "noplaylist": True, "quiet": True}) as y:
             e = y.extract_info(f"ytsearch1:{q}", download=False).get("entries", [])
             return (e["title"], e["webpage_url"]) if e else (None, None)
     except Exception:
@@ -33,8 +32,8 @@ def ask_smart_ai(uname, text):
     if not ai:
         return "مفتاح الذكاء الاصطناعي غير مفعل."
     try:
-        p = f"أنت بوت ذكي وودود في غرفة IMVU. اللاعب ({uname}) يقول: '{text}'. رد بالعربية باختصار ولباقة:"
-        return ai.generate_content(p).text.strip()
+        prompt = f"أنت بوت ذكي وودود في غرفة IMVU. اللاعب ({uname}) يقول: '{text}'. رد بالعربية باختصار ولباقة (سطرين كحد أقصى):"
+        return ai.generate_content(prompt).text.strip()
     except Exception:
         return "تسلم يا غالي! 🌹"
 
@@ -53,8 +52,7 @@ class Bot:
             state["log"] = "بيانات الحساب ناقصة في Render"
             return None, None
         try:
-            pl = {"username": USER, "password": PASS, "gdpr_cookie_consent": True}
-            r = self.s.post("https://imvu.com", json=pl, timeout=15)
+            r = self.s.post("https://imvu.com", json={"username": USER, "password": PASS, "gdpr_cookie_consent": True}, timeout=15)
             if r.status_code == 429:
                 state["log"] = "حظر مؤقت 429 - سينتظر البوت 10 دقائق تلقائياً"
                 return "429", None
@@ -185,4 +183,4 @@ def ping():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
-            
+        

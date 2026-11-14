@@ -1,224 +1,245 @@
 import os
+import json
+import time
 import asyncio
 import threading
-from flask import Flask, request, render_template_string, redirect, url_for
-import yt_dlp
+import requests
+import websockets
+from flask import Flask, request, render_template_string
 import google.generativeai as genai
-
-USERNAME = os.environ.get("BOT_USERNAME")
-PASSWORD = os.environ.get("BOT_PASSWORD")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-MY_ROOM_ID = os.environ.get("MY_ROOM_ID", "")
-ALLOWED_ROOMS = os.environ.get("ALLOWED_ROOMS", "")
-PAYMENT_INFO = os.environ.get("PAYMENT_INFO", "سعر الاشتراك: 5000 كريدت أو 5$ USDT. تواصل مع المالك لتفعيل رقم غرفتك.")
-
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash",
-        system_instruction="أنت بوت ذكي وموسيقي في لعبة IMVU. رد باللهجة العربية الودودة والقصيرة (سطر أو سطرين كحد أقصى) وأجب على أي سؤال بذكاء."
-    )
-else:
-    model = None
+import yt_dlp
 
 app = Flask(__name__)
 
-active_rooms = {}
-current_songs = {}
-custom_replies = {}
-welcome_enabled = True
+# قراءة المتغيرات من إعدادات Render
+BOT_USERNAME = os.environ.get("BOT_USERNAME", "")
+BOT_PASSWORD = os.environ.get("BOT_PASSWORD", "")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+ADMIN_SECRET = os.environ.get("ADMIN_SECRET", "12345")
+DEFAULT_ROOM = os.environ.get("MY_ROOM_ID", "")
 
-HTML_TEMPLATE = """
+# تهيئة الذكاء الاصطناعي Gemini
+ai_model = None
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    ai_model = genai.GenerativeModel("gemini-1.5-flash")
+
+# دالة تنظيف رقم الروم في حال تم إدخال رابط كامل
+def clean_room_id(raw_id):
+    val = str(raw_id).strip()
+    if "room-" in val:
+        val = val.split("room-")[-1].split("-")[0]
+    return val
+
+# قائمة الاشتراكات المفعلة (مقفلة ضد السرقة)
+subscriptions = {}
+if DEFAULT_ROOM:
+    r_clean = clean_room_id(DEFAULT_ROOM)
+    if r_clean:
+        subscriptions[r_clean] = {
+            "host": "الكل",
+            "mods": [],
+            "active": True
+        }
+
+bot_state = {
+    "logged_in": False,
+    "log": "جاري بدء التشغيل والاتصال...",
+    "current_song": "لا يوجد",
+    "connected_rooms": []
+}
+
+# دالة البحث عن الأغاني في يوتيوب
+def search_youtube_song(query):
+    ydl_opts = {
+        "format": "bestaudio",
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            result = ydl.extract_info(f"ytsearch1:{query}", download=False)
+            entries = result.get("entries", [])
+            if entries and len(entries) > 0:
+                video = entries[0]
+                return video.get("title", query), video.get("webpage_url", "")
+        return None, None
+    except Exception:
+        return None, None
+
+# دالة الرد الذكي
+def ask_gemini(prompt):
+    if not ai_model:
+        return "مفتاح الذكاء الاصطناعي غير مضاف في الإعدادات."
+    try:
+        sys_msg = "أنت بوت ذكي ومشرف مساعد في غرفة دردشة IMVU. رد بالعربية باختصار شديد ولباقة (سطرين كحد أقصى): "
+        res = ai_model.generate_content(sys_msg + prompt)
+        return res.text.strip()
+    except Exception:
+        return "عذراً، حدث ضغط في النظام. حاول بعد قليل."
+
+# التحقق من صلاحية الهوست والمشرفين والاشتراك
+def is_authorized(room_id, sender_name):
+    sub = subscriptions.get(str(room_id))
+    if not sub or not sub.get("active"):
+        return False
+    if sub["host"] == "الكل" or not sub["host"]:
+        return True
+    allowed = [sub["host"].lower()] + [m.lower() for m in sub["mods"]]
+    return sender_name.lower() in allowed
+
+# عميل الاتصال الفعلي بلعبة IMVU
+class SecureIMVUBot:
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Content-Type": "application/json"
+        })
+        self.cid = None
+        self.sauce = None
+
+    def login(self):
+        if not BOT_USERNAME or not BOT_PASSWORD:
+            bot_state["log"] = "خطأ: بيانات حساب البوت ناقصة في Render"
+            return False
+        try:
+            resp = self.session.post(
+                "https://imvu.com",
+                json={"username": BOT_USERNAME, "password": BOT_PASSWORD},
+                timeout=15
+            )
+            data = resp.json()
+            if data.get("status") == "success":
+                user_info = data["denormalized"][data["id"]]["data"]
+                self.cid = user_info["user"]["id"]
+                self.sauce = user_info["sauce"]
+                bot_state["logged_in"] = True
+                bot_state["log"] = f"تم تسجيل الدخول بنجاح (ID: {self.cid})"
+                return True
+            bot_state["log"] = f"فشل الدخول: {data.get('message', 'تحقق من بيانات الحساب')}"
+            return False
+        except Exception as e:
+            bot_state["log"] = f"خطأ في الاتصال بالسيرفر: {e}"
+            return False
+
+    async def run_ws(self):
+        if not self.login():
+            return
+
+        imq_url = "wss://://imvu.com"
+        try:
+            async with websockets.connect(imq_url) as ws:
+                await ws.send(json.dumps({
+                    "type": "imq_connect",
+                    "user_id": str(self.cid),
+                    "sauce": self.sauce
+                }))
+                await asyncio.sleep(1)
+
+                joined = set()
+                while True:
+                    # الانضمام للغرف المفعلة فقط
+                    for r_id, info in list(subscriptions.items()):
+                        if info.get("active") and r_id not in joined:
+                            ch = f"imvu:room:{r_id}"
+                            await ws.send(json.dumps({"type": "imq_join", "channel": ch}))
+                            joined.add(r_id)
+                            bot_state["connected_rooms"] = list(joined)
+                            await ws.send(json.dumps({
+                                "type": "imq_send",
+                                "channel": ch,
+                                "message": "🛡️ تم تفعيل البوت الذكي المحمي! الأوامر متاحة للهوست والمشرفين."
+                            }))
+
+                    try:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=3.0)
+                    except asyncio.TimeoutError:
+                        continue
+
+                    msg_data = json.loads(raw)
+                    text = msg_data.get("message", "").strip()
+                    sender_id = str(msg_data.get("user_id", ""))
+                    sender_name = str(msg_data.get("username", sender_id))
+                    channel = msg_data.get("channel", "")
+
+                    if not text or sender_id == str(self.cid) or not channel.startswith("imvu:room:"):
+                        continue
+
+                    room_id = channel.replace("imvu:room:", "")
+
+                    # رفض أي شخص غير مصرح له أو روم غير مشترك
+                    if not is_authorized(room_id, sender_name):
+                        continue
+
+                    # أمر تشغيل الأغاني
+                    if text.startswith("!شغل ") or text.startswith("!play "):
+                        parts = text.split(" ", 1)
+                        if len(parts) > 1 and parts[1].strip():
+                            title, link = search_youtube_song(parts[1].strip())
+                            if title:
+                                bot_state["current_song"] = title
+                                reply = f"🎶 تشغيل ({sender_name}): {title} | {link}"
+                            else:
+                                reply = "❌ لم أتمكن من العثور على الأغنية."
+                            await ws.send(json.dumps({"type": "imq_send", "channel": channel, "message": reply}))
+
+                    # أمر الذكاء الاصطناعي
+                    elif text.startswith("!بوت ") or text.startswith("بوت "):
+                        parts = text.split(" ", 1)
+                        if len(parts) > 1 and parts[1].strip():
+                            ai_ans = ask_gemini(parts[1].strip())
+                            if ai_ans:
+                                await ws.send(json.dumps({"type": "imq_send", "channel": channel, "message": ai_ans}))
+
+        except Exception as e:
+            bot_state["logged_in"] = False
+            bot_state["connected_rooms"] = []
+            bot_state["log"] = f"انقطع الاتصال، جاري إعادة المحاولة تلقائياً..."
+
+def background_worker():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    bot = SecureIMVUBot()
+    while True:
+        loop.run_until_complete(bot.run_ws())
+        time.sleep(15)
+
+threading.Thread(target=background_worker, daemon=True).start()
+
+# واجهة لوحة التحكم
+HTML_DASHBOARD = """
 <!DOCTYPE html>
-<html lang="ar" dir="rtl">
+<html dir="rtl" lang="ar">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>لوحة تحكم البوت الذكي والموسيقي</title>
+    <title>لوحة إدارة اشتراكات بوت IMVU</title>
     <style>
-        body { background-color: #0b0f19; color: #f8fafc; font-family: Tahoma, sans-serif; margin: 0; padding: 15px; text-align: center; }
-        .container { max-width: 480px; margin: auto; }
-        .box { background: #131b2e; border: 1px solid #1e293b; border-radius: 16px; padding: 20px; margin-bottom: 15px; box-shadow: 0 4px 20px rgba(0,0,0,0.4); }
-        h2, h3 { margin-top: 0; color: #38bdf8; }
-        input { width: 92%; padding: 12px; margin: 8px 0; border-radius: 10px; border: 1px solid #334155; background: #0f172a; color: white; text-align: center; font-size: 15px; }
-        .btn { padding: 11px 18px; border: none; border-radius: 10px; font-weight: bold; cursor: pointer; font-size: 14px; margin: 5px; }
-        .btn-green { background: linear-gradient(90deg, #10b981, #059669); color: white; width: 45%; }
-        .btn-red { background: #ef4444; color: white; width: 45%; }
-        .btn-blue { background: #3b82f6; color: white; }
-        .btn-kick { background: #dc2626; color: white; padding: 6px 12px; border-radius: 8px; font-size: 12px; }
-        .member-row { display: flex; justify-content: space-between; align-items: center; background: #0f172a; padding: 10px 15px; border-radius: 10px; margin-bottom: 8px; border: 1px solid #1e293b; }
-        .song-box { background: #0f172a; padding: 12px; border-radius: 12px; border: 1px solid #10b981; color: #34d399; font-weight: bold; }
-        .msg { background: #1e293b; color: #38bdf8; padding: 10px; border-radius: 10px; margin-bottom: 15px; font-weight: bold; }
-        .cmd-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; text-align: right; font-size: 12px; }
-        .cmd-item { background: #0f172a; padding: 10px; border-radius: 8px; border: 1px solid #1e293b; }
-        .cmd-code { color: #38bdf8; font-weight: bold; display: block; margin-bottom: 4px; }
+        body { font-family: Tahoma, sans-serif; background: #0f172a; color: #f8fafc; padding: 15px; text-align: center; }
+        .box { background: #1e293b; border-radius: 12px; padding: 20px; max-width: 480px; margin: 15px auto; box-shadow: 0 4px 12px rgba(0,0,0,0.4); }
+        input, button { width: 92%; padding: 11px; margin: 7px 0; border-radius: 8px; border: none; font-size: 15px; }
+        input { background: #334155; color: white; }
+        button { background: #2563eb; color: white; font-weight: bold; cursor: pointer; }
+        .sub-item { background: #0f172a; padding: 10px; border-radius: 8px; margin: 8px 0; text-align: right; font-size: 14px; }
+        .alert { color: #38bdf8; font-weight: bold; margin: 10px 0; }
     </style>
 </head>
 <body>
-<div class="container">
-    {% if msg %}
-        <div class="msg">{{ msg }}</div>
-    {% endif %}
-
     <div class="box">
-        <h2>🎵 لوحة تحكم البوت الذكي</h2>
-        <p style="font-size: 13px; color: #94a3b8;">أدخل رقم غرفتك (Room ID) للتحكم الكامل وإدخال البوت</p>
-        <form method="GET" action="/">
-            <input type="text" name="room_id" value="{{ room_id }}" placeholder="رقم الغرفة (مثال: 350431027-27)" required>
-            <br>
-            <button type="submit" name="action" value="join" class="btn btn-green">إدخال البوت ✅</button>
-            <button type="submit" name="action" value="leave" class="btn btn-red">مغادرة الروم ❌</button>
-        </form>
-        <p style="font-size: 11px; color: #fbbf24; margin-top: 10px;">⚠️ شرط هام: أعطِ حساب البوت رتبة Moderator في غرفتك قبل الدخول.</p>
-    </div>
-
-    {% if room_id and is_allowed %}
-    <div class="box">
-        <h3>🎶 الأغنية الشغالة حالياً</h3>
-        <div class="song-box">
-            {{ current_song }}
-        </div>
-        <form method="POST" action="/control" style="margin-top: 10px;">
-            <input type="hidden" name="room_id" value="{{ room_id }}">
-            <input type="text" name="song_query" placeholder="اكتب اسم أغنية لتشغيلها مباشرة...">
-            <button type="submit" name="cmd" value="play" class="btn btn-green">!play تشغيل ▶️</button>
-            <button type="submit" name="cmd" value="stop" class="btn btn-red">!stop إيقاف ⏹️</button>
-        </form>
+        <h2>🛡️ لوحة البوت المحمي (نظام الاشتراكات)</h2>
+        <p>الحالة: <b>{{ state.log }}</b></p>
+        <p>الغرف النشطة: <b>{{ state.connected_rooms | join(', ') or 'لا يوجد' }}</b></p>
+        <p>الأغنية الحالية: <b>{{ state.current_song }}</b></p>
+        {% if message %}<div class="alert">{{ message }}</div>{% endif %}
     </div>
 
     <div class="box">
-        <h3>👥 المتواجدين في الروم ({{ members|length }})</h3>
-        {% if members %}
-            {% for m in members %}
-            <div class="member-row">
-                <div style="text-align: right;">
-                    <strong>{{ m.name }}</strong><br>
-                    <span style="font-size: 11px; color: #64748b;">ID: {{ m.id }}</span>
-                </div>
-                <form method="POST" action="/kick" style="margin: 0;">
-                    <input type="hidden" name="room_id" value="{{ room_id }}">
-                    <input type="hidden" name="target_name" value="{{ m.name }}">
-                    <button type="submit" class="btn btn-kick">❌ طرد</button>
-                </form>
-            </div>
-            {% endfor %}
-        {% else %}
-            <p style="font-size: 13px; color: #64748b;">البوت جاهز للاتصال أو لا يوجد أعضاء مسجلون حالياً.</p>
-        {% endif %}
-    </div>
-
-    <div class="box">
-        <h3>💬 ردود تلقائية مخصصة</h3>
-        <form method="POST" action="/add_reply">
-            <input type="hidden" name="room_id" value="{{ room_id }}">
-            <input type="text" name="trigger" placeholder="الكلمة المفتاحية (مثلاً: السلام عليكم)" required>
-            <input type="text" name="reply" placeholder="رد البوت (استخدم {user} لاسم الشخص)" required>
-            <button type="submit" class="btn btn-blue">+ إضافة رد</button>
-        </form>
-        {% for k, v in replies.items() %}
-            <div style="font-size: 12px; background: #0f172a; padding: 8px; border-radius: 8px; margin-top: 5px;">
-                <strong>{{ k }}</strong> ⬅️ {{ v }}
-            </div>
-        {% endfor %}
-    </div>
-    {% endif %}
-
-    <div class="box">
-        <h3>📋 أوامر البوت في الدردشة</h3>
-        <div class="cmd-grid">
-            <div class="cmd-item"><span class="cmd-code">!شغل [اسم الأغنية]</span>البحث وتشغيل الأغنية فوراً</div>
-            <div class="cmd-item"><span class="cmd-code">!وقف</span>إيقاف الموسيقى الحالية</div>
-            <div class="cmd-item"><span class="cmd-code">يا بوت [سؤالك]</span>سؤال الذكاء الاصطناعي عن أي شيء</div>
-            <div class="cmd-item"><span class="cmd-code">!طرد [الاسم]</span>طرد شخص من الغرفة (للمشرفين)</div>
-        </div>
-    </div>
-
-    <div class="box" style="border-color: #3b82f6;">
-        <h3>💳 تفعيل الاشتراك والدفع</h3>
-        <p style="font-size: 13px; color: #cbd5e1;">{{ payment_info }}</p>
-    </div>
-</div>
-</body>
-</html>
-"""
-
-def check_allowed(room_id):
-    if not room_id:
-        return False
-    allowed = [r.strip() for r in ALLOWED_ROOMS.split(",") if r.strip()]
-    if MY_ROOM_ID:
-        allowed.append(MY_ROOM_ID.strip())
-    return room_id.strip() in allowed
-
-def search_youtube_song(query):
-    try:
-        ydl_opts = {'format': 'bestaudio', 'noplaylist': True, 'quiet': True}
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(f"ytsearch1:{query}", download=False)
-            if info and 'entries' in info and len(info['entries']) > 0:
-                return info['entries'].get('title', query)
-    except Exception as e:
-        print(f"Search error: {e}")
-    return query
-
-@app.route("/", methods=["GET"])
-def index():
-    room_id = request.args.get("room_id", MY_ROOM_ID).strip()
-    action = request.args.get("action")
-    msg = request.args.get("msg", "")
-    is_allowed = check_allowed(room_id)
-
-    if action and room_id:
-        if not is_allowed:
-            msg = "❌ هذه الغرفة غير مفعلة! ادفع الاشتراك أولاً ثم أرسل رقم غرفتك للمالك."
-        elif action == "join":
-            active_rooms[room_id] = True
-            msg = f"✅ تم تفعيل وضع الدخول للغرفة {room_id} بنجاح!"
-        elif action == "leave":
-            active_rooms.pop(room_id, None)
-            msg = f"👋 تم إيقاف الاتصال بالغرفة {room_id}."
-
-    members_list = []
-    song_name = current_songs.get(room_id, "لا توجد أغنية تعمل حالياً")
-    return render_template_string(
-        HTML_TEMPLATE,
-        room_id=room_id,
-        is_allowed=is_allowed,
-        msg=msg,
-        members=members_list,
-        current_song=song_name,
-        replies=custom_replies,
-        payment_info=PAYMENT_INFO
-    )
-
-@app.route("/control", methods=["POST"])
-def control_music():
-    room_id = request.form.get("room_id", "").strip()
-    cmd = request.form.get("cmd")
-    song_query = request.form.get("song_query", "").strip()
-    if check_allowed(room_id):
-        if cmd == "play" and song_query:
-            song_title = search_youtube_song(song_query)
-            current_songs[room_id] = f"🎵 {song_title}"
-        elif cmd == "stop":
-            current_songs[room_id] = "لا توجد أغنية تعمل حالياً"
-    return redirect(url_for("index", room_id=room_id, msg="تم تنفيذ أمر الموسيقى ✅"))
-
-@app.route("/kick", methods=["POST"])
-def kick_user():
-    room_id = request.form.get("room_id", "").strip()
-    target_name = request.form.get("target_name", "").strip()
-    return redirect(url_for("index", room_id=room_id, msg=f"تم تسجيل أمر طرد {target_name} 🚫"))
-
-@app.route("/add_reply", methods=["POST"])
-def add_reply():
-    room_id = request.form.get("room_id", "").strip()
-    trigger = request.form.get("trigger", "").strip()
-    reply = request.form.get("reply", "").strip()
-    if check_allowed(room_id) and trigger and reply:
-        custom_replies[trigger] = reply
-    return redirect(url_for("index", room_id=room_id, msg="تم حفظ الرد المخصص بنجاح ✅"))
-
-if __name__ == "__main__":
-           port = int(os.environ.get("PORT", 10000))
-           app.run(host="0.0.0.0", port=port)
+        <h3>➕ تفعيل اشتراك روم جديد (للمالك فقط)</h3>
+        <form method="POST" action="/manage_sub">
+            <input type="password" name="secret" placeholder="كلمة سر المالك (ADMIN_SECRET)" required>
+            <input type="text" name="room_id" placeholder="رقم الروم (Room ID)" required>
+            <input type="text" name="host" placeholder="اسم الهوست (أو اكتب: الكل)" required>
+            <input type="text" name="mods" placeholder="أسماء المشرفين مفصولة بفاصلة (اختياري)">
+            <button type="submit" name="action" value="add">تفعيل الاشتراك ودخول البوت</button>

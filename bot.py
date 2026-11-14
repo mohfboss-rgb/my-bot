@@ -1,6 +1,6 @@
 import os, json, time, asyncio, threading, requests, websockets
 from flask import Flask, request, render_template
-import google.generativeai as genai
+from google import genai
 import yt_dlp
 
 app = Flask(__name__)
@@ -10,11 +10,7 @@ KEY = os.environ.get("GEMINI_API_KEY", "")
 SEC = os.environ.get("ADMIN_SECRET", "12345")
 
 DEF_R = os.environ.get("MY_ROOM_ID", "").split("room-")[-1].strip()
-if KEY:
-    genai.configure(api_key=KEY)
-    ai = genai.GenerativeModel("gemini-1.5-flash")
-else:
-    ai = None
+client = genai.Client(api_key=KEY) if KEY else None
 
 rooms = {DEF_R: {"dj": False, "shield": False, "host": "", "oid": "", "mods": [], "song": "لا يوجد", "q": []}} if DEF_R else {}
 members = {}
@@ -29,11 +25,12 @@ def yt(q):
         return None, None
 
 def ask_smart_ai(uname, text):
-    if not ai:
-        return "مفتاح الذكاء الاصطناعي غير مفعل."
+    if not client:
+        return "أهلاً بك يا غالي! 🌹"
     try:
-        prompt = f"أنت بوت ذكي وودود في غرفة IMVU. اللاعب {uname} يقول: '{text}'. رد بالعربية باختصار ولباقة (سطرين كحد أقصى)."
-        return ai.generate_content(prompt).text.strip()
+        prompt = f"أنت بوت موسيقى وذكاء اصطناعي مرح في غرفة IMVU. اللاعب {uname} يقول: '{text}'. رد عليه بالعربية باختصار ولباقة (سطرين كحد أقصى)."
+        res = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+        return res.text.strip()
     except Exception:
         return "تسلم يا غالي! 🌹"
 
@@ -85,14 +82,12 @@ class Bot:
                     await asyncio.sleep(1)
                     joined = set()
                     while True:
-                        # الخروج من الغرف القديمة التي تم حذفها
                         for old_r in list(joined):
                             if old_r not in rooms:
                                 await ws.send(json.dumps({"type": "imq_leave", "channel": f"imvu:room:{old_r}"}))
                                 joined.remove(old_r)
                                 members.pop(old_r, None)
 
-                        # الدخول للغرفة الجديدة وإرسال طلب الصداقة
                         for rid, cfg in list(rooms.items()):
                             if rid not in joined:
                                 await ws.send(json.dumps({"type": "imq_join", "channel": f"imvu:room:{rid}"}))
@@ -201,3 +196,6 @@ def add():
 def welcome():
     if request.form.get("s") != SEC:
         return render_template("index.html", state=state, rooms=rooms, members=members, msg="❌ كلمة سر خاطئة")
+    state["welcome"] = request.form.get("w", state["welcome"])
+    return render_template("index.html", state=state, rooms=rooms, members=members, msg="✅ تم حفظ الترحيب")
+

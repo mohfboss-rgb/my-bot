@@ -8,8 +8,8 @@ USER = os.environ.get("BOT_USERNAME", "")
 PASS = os.environ.get("BOT_PASSWORD", "")
 KEY = os.environ.get("GEMINI_API_KEY", "")
 SEC = os.environ.get("ADMIN_SECRET", "12345")
-DEF_R = os.environ.get("MY_ROOM_ID", "").split("room-")[-1].split("-").strip()
 
+DEF_R = os.environ.get("MY_ROOM_ID", "").replace("room-", "").strip()
 if KEY:
     genai.configure(api_key=KEY)
     ai = genai.GenerativeModel("gemini-1.5-flash")

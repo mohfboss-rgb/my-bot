@@ -9,6 +9,10 @@ PASS = os.environ.get("BOT_PASSWORD", "")
 KEY = os.environ.get("GEMINI_API_KEY", "")
 SEC = os.environ.get("ADMIN_SECRET", "12345")
 
+LOGIN_URL = "https://" + "api.imvu" + ".com/login"
+WS_URL = "wss://" + "imq.imvu" + ".com:443/"
+API_BASE = "https://" + "api.imvu" + ".com"
+
 DEF_R = os.environ.get("MY_ROOM_ID", "").split("room-")[-1].strip()
 client = genai.Client(api_key=KEY) if KEY else None
 
@@ -49,11 +53,10 @@ class Bot:
             state["log"] = "بيانات الحساب ناقصة في Render"
             return None, None
         try:
-            r = self.s.post("https://imvu.com", json={"username": USER, "password": PASS, "gdpr_cookie_consent": True}, timeout=15)
+            r = self.s.post(LOGIN_URL, json={"username": USER, "password": PASS, "gdpr_cookie_consent": True}, timeout=15)
             if r.status_code == 429:
                 state["log"] = "حظر مؤقت 429 - سينتظر البوت 10 دقائق تلقائياً"
-                            r = self.s.post("https://imvu.com", json={"username": USER, "password": PASS, "gdpr_cookie_consent": True}, timeout=15)
-                
+                return "429", None
             if not r.text.strip().startswith("{"):
                 state["log"] = f"حماية السيرفر (كود {r.status_code}) - سيحاول البوت تلقائياً"
                 return None, None
@@ -78,7 +81,7 @@ class Bot:
                 await asyncio.sleep(60)
                 continue
             try:
-                async with websockets.connect("wss://://imvu.com") as ws:
+                async with websockets.connect(WS_URL) as ws:
                     await ws.send(json.dumps({"type": "imq_connect", "user_id": cid, "sauce": sauce}))
                     await asyncio.sleep(1)
                     joined = set()
@@ -96,7 +99,7 @@ class Bot:
                                 members.setdefault(rid, {})
                                 if cfg.get("oid"):
                                     try:
-                                        self.s.post(f"https://imvu.com{cid}/friends", json={"id": f"https://imvu.com{cfg['oid']}"}, timeout=10)
+                                        self.s.post(f"{API_BASE}/user/user-{cid}/friends", json={"id": f"{API_BASE}/user/user-{cfg['oid']}"}, timeout=10)
                                     except Exception:
                                         pass
                                 await ws.send(json.dumps({"type": "imq_send", "channel": f"imvu:room:{rid}", "message": "🎵 تم تفعيل بوت الموسيقى بنجاح!"}))
@@ -197,6 +200,4 @@ def add():
 def welcome():
     if request.form.get("s") != SEC:
         return render_template("index.html", state=state, rooms=rooms, members=members, msg="❌ كلمة سر خاطئة")
-    state["welcome"] = request.form.get("w", state["welcome"])
-    return render_template("index.html", state=state, rooms=rooms, members=members, msg="✅ تم حفظ الترحيب")
-
+                

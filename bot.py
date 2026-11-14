@@ -53,7 +53,8 @@ class Bot:
             state["log"] = "بيانات الحساب ناقصة في Render"
             return None, None
         try:
-            r = self.s.post(LOGIN_URL, json={"username": USER, "password": PASS, "gdpr_cookie_consent": True}, timeout=15)
+           r = self.s.post(LOGIN_URL, json={"username": USER, "password": PASS}, timeout=15)
+
             if r.status_code == 429:
                 state["log"] = "حظر مؤقت 429 - سينتظر البوت 10 دقائق تلقائياً"
                 return "429", None

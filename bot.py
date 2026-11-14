@@ -19,23 +19,24 @@ if GEMINI_API_KEY:
 def clean_room_id(raw_id):
     val = str(raw_id).strip()
     if "room-" in val:
-        val = val.split("room-")[-1].split("-")[0]
+        val = val.split("room-")[-1].split("-")
     return val
 
-subscriptions = {}
+vip_rooms = {}
+active_rooms = set()
 if DEFAULT_ROOM:
     r_clean = clean_room_id(DEFAULT_ROOM)
     if r_clean:
-        subscriptions[r_clean] = {"host": "الكل", "mods": [], "active": True}
+        active_rooms.add(r_clean)
 
-bot_state = {"logged_in": False, "log": "جاري الاتصال...", "current_song": "لا يوجد", "connected_rooms": []}
+bot_state = {"logged_in": False, "log": "جاري الاتصال كـ تطبيق موبايل...", "current_song": "لا يوجد", "connected_rooms": []}
 
 def search_youtube_song(query):
     try:
         with yt_dlp.YoutubeDL({"format": "bestaudio", "noplaylist": True, "quiet": True}) as ydl:
             entries = ydl.extract_info(f"ytsearch1:{query}", download=False).get("entries", [])
             if entries:
-                return entries[0].get("title", query), entries[0].get("webpage_url", "")
+                return entries.get("title", query), entries.get("webpage_url", "")
     except Exception:
         pass
     return None, None
@@ -44,24 +45,27 @@ def ask_gemini(prompt):
     if not ai_model:
         return "مفتاح الذكاء الاصطناعي غير مضاف."
     try:
-        res = ai_model.generate_content("أنت بوت ذكي في غرفة IMVU. رد بالعربية باختصار ولباقة: " + prompt)
+        res = ai_model.generate_content("أنت بوت ذكي وممتع في غرفة IMVU. رد بالعربية باختصار ولباقة: " + prompt)
         return res.text.strip()
     except Exception:
         return "حاول مرة أخرى بعد قليل."
 
-def is_authorized(room_id, sender_name):
-    sub = subscriptions.get(str(room_id))
+def can_use_bot(room_id, sender_name):
+    sub = vip_rooms.get(str(room_id))
     if not sub or not sub.get("active"):
-        return False
-    if sub["host"] == "الكل" or not sub["host"]:
         return True
     allowed = [sub["host"].lower()] + [m.lower() for m in sub["mods"]]
     return sender_name.lower() in allowed
 
-class SecureIMVUBot:
+class MobileIMVUBot:
     def __init__(self):
         self.session = requests.Session()
-        self.session.headers.update({"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"})
+        self.session.headers.update({
+            "User-Agent": "IMVU/9.12.0 (Android 13; SM-S918B) okhttp/4.11.0",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "X-IMVU-Application": "imvu_mobile_android"
+        })
         self.cid = None
         self.sauce = None
 
@@ -70,15 +74,24 @@ class SecureIMVUBot:
             bot_state["log"] = "بيانات الحساب ناقصة في Render"
             return False
         try:
-            resp = self.session.post("https://imvu.com", json={"username": BOT_USERNAME, "password": BOT_PASSWORD}, timeout=15)
+            payload = {
+                "username": BOT_USERNAME,
+                "password": BOT_PASSWORD,
+                "gdpr_cookie_consent": True
+            }
+            resp = self.session.post("https://imvu.com", json=payload, timeout=15)
+            if not resp.text.strip().startswith("{"):
+                bot_state["log"] = f"رد غير متوقع من السيرفر (كود {resp.status_code})"
+                return False
             data = resp.json()
             if data.get("status") == "success":
                 u = data["denormalized"][data["id"]]["data"]
-                self.cid, self.sauce = u["user"]["id"], u["sauce"]
+                self.cid = u["user"]["id"]
+                self.sauce = u["sauce"]
                 bot_state["logged_in"] = True
-                bot_state["log"] = f"متصل بالحساب (ID: {self.cid})"
+                bot_state["log"] = f"متصل بنجاح! (ID: {self.cid})"
                 return True
-            bot_state["log"] = f"فشل الدخول: {data.get('message', 'تحقق من الحساب')}"
+            bot_state["log"] = f"رسالة اللعبة: {data.get('message', 'تحقق من الاسم وكلمة المرور')}"
             return False
         except Exception as e:
             bot_state["log"] = f"خطأ اتصال: {e}"
@@ -93,13 +106,14 @@ class SecureIMVUBot:
                 await asyncio.sleep(1)
                 joined = set()
                 while True:
-                    for r_id, info in list(subscriptions.items()):
-                        if info.get("active") and r_id not in joined:
+                    for r_id in list(active_rooms):
+                        if r_id not in joined:
                             ch = f"imvu:room:{r_id}"
                             await ws.send(json.dumps({"type": "imq_join", "channel": ch}))
                             joined.add(r_id)
                             bot_state["connected_rooms"] = list(joined)
-                            await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": "🛡️ تم تفعيل البوت المحمي!"}))
+                            mode_msg = "👑 وضع VIP (للهوست والمشرفين)" if vip_rooms.get(r_id, {}).get("active") else "🎉 وضع عام (مفتوح للكل)"
+                            await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": f"🤖 تم تفعيل البوت الذكي! {mode_msg}"}))
                     try:
                         raw = await asyncio.wait_for(ws.recv(), timeout=3.0)
                     except asyncio.TimeoutError:
@@ -112,17 +126,17 @@ class SecureIMVUBot:
                     if not text or sender_id == str(self.cid) or not channel.startswith("imvu:room:"):
                         continue
                     room_id = channel.replace("imvu:room:", "")
-                    if not is_authorized(room_id, sender_name):
+                    if not can_use_bot(room_id, sender_name):
                         continue
                     if text.startswith("!شغل ") or text.startswith("!play "):
-                        q = text.split(" ", 1)[1].strip()
+                        q = text.split(" ", 1).strip()
                         title, link = search_youtube_song(q)
                         reply = f"🎶 {title} | {link}" if title else "❌ لم أجد الأغنية."
                         if title:
                             bot_state["current_song"] = title
                         await ws.send(json.dumps({"type": "imq_send", "channel": channel, "message": reply}))
                     elif text.startswith("!بوت ") or text.startswith("بوت "):
-                        ai_ans = ask_gemini(text.split(" ", 1)[1].strip())
+                        ai_ans = ask_gemini(text.split(" ", 1).strip())
                         await ws.send(json.dumps({"type": "imq_send", "channel": channel, "message": ai_ans}))
         except Exception:
             bot_state["logged_in"] = False
@@ -132,14 +146,14 @@ class SecureIMVUBot:
 def worker():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    bot = SecureIMVUBot()
+    bot = MobileIMVUBot()
     while True:
         loop.run_until_complete(bot.run_ws())
         time.sleep(15)
 
 threading.Thread(target=worker, daemon=True).start()
 
-HTML = """<!DOCTYPE html><html dir="rtl"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>بوت IMVU</title><style>body{font-family:Tahoma;background:#0f172a;color:#fff;text-align:center;padding:15px}.box{background:#1e293b;padding:15px;border-radius:10px;max-width:450px;margin:10px auto}input,button{width:90%;padding:10px;margin:5px 0;border-radius:6px;border:none}input{background:#334155;color:#fff}button{background:#2563eb;color:#fff;font-weight:bold}</style></head><body><div class="box"><h2>🛡️ بوت IMVU المحمي</h2><p>الحالة: <b>{{state.log}}</b></p><p>الغرف: <b>{{state.connected_rooms|join(', ') or 'لا يوجد'}}</b></p>{% if msg %}<p style="color:#38bdf8">{{msg}}</p>{% endif %}</div><div class="box"><h3>تفعيل اشتراك</h3><form method="POST" action="/sub"><input type="password" name="sec" placeholder="كلمة سر المالك" required><input type="text" name="rid" placeholder="رقم الروم" required><input type="text" name="host" placeholder="اسم الهوست أو الكل" required><input type="text" name="mods" placeholder="المشرفين بفاصلة"><button name="act" value="add">تفعيل</button><button name="act" value="del" style="background:#dc2626">إيقاف</button></form></div></body></html>"""
+HTML = """<!DOCTYPE html><html dir="rtl"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>بوت IMVU</title><style>body{font-family:Tahoma;background:#0f172a;color:#fff;text-align:center;padding:15px}.box{background:#1e293b;padding:15px;border-radius:10px;max-width:450px;margin:10px auto}input,button{width:90%;padding:10px;margin:5px 0;border-radius:6px;border:none}input{background:#334155;color:#fff}button{background:#2563eb;color:#fff;font-weight:bold}</style></head><body><div class="box"><h2>🤖 لوحة البوت الذكي</h2><p>الحالة: <b>{{state.log}}</b></p><p>الغرف: <b>{{state.connected_rooms|join(', ') or 'لا يوجد'}}</b></p>{% if msg %}<p style="color:#38bdf8">{{msg}}</p>{% endif %}</div><div class="box"><h3>إدارة الغرف والاشتراكات</h3><form method="POST" action="/sub"><input type="password" name="sec" placeholder="كلمة سر المالك" required><input type="text" name="rid" placeholder="رقم الروم" required><input type="text" name="host" placeholder="اسم الهوست (اتركه فارغاً ليبقى للكل)"><input type="text" name="mods" placeholder="المشرفين بفاصلة (للاشتراك الخاص)"><button name="act" value="vip">تفعيل اشتراك VIP (للهوست والمشرفين)</button><button name="act" value="free" style="background:#16a34a">إدخال البوت مجاناً (مفتوح للكل)</button><button name="act" value="del" style="background:#dc2626">إلغاء الاشتراك (يعود للكل)</button></form></div></body></html>"""
 
 @app.route("/")
 def index():
@@ -150,13 +164,19 @@ def sub():
     if request.form.get("sec") != ADMIN_SECRET:
         return render_template_string(HTML, state=bot_state, msg="⛔ كلمة سر خاطئة!")
     rid = clean_room_id(request.form.get("rid", ""))
-    if request.form.get("act") == "add" and rid:
+    act = request.form.get("act")
+    if act == "vip" and rid:
+        active_rooms.add(rid)
         mods = [m.strip() for m in request.form.get("mods", "").split(",") if m.strip()]
-        subscriptions[rid] = {"host": request.form.get("host", "الكل").strip(), "mods": mods, "active": True}
-        m = f"✅ تم تفعيل الروم {rid}"
+        vip_rooms[rid] = {"host": request.form.get("host", "").strip(), "mods": mods, "active": True}
+        m = f"👑 تم تفعيل اشتراك VIP للروم {rid} (للهوست والمشرفين فقط)"
+    elif act == "free" and rid:
+        active_rooms.add(rid)
+        vip_rooms.pop(rid, None)
+        m = f"🎉 تم إدخال البوت للروم {rid} بوضع مفتوح للكل"
     else:
-        if rid in subscriptions: subscriptions[rid]["active"] = False
-        m = f"🛑 تم إيقاف الروم {rid}"
+        vip_rooms.pop(rid, None)
+        m = f"🔓 تم إلغاء اشتراك VIP للروم {rid} وعاد مفتوحاً للكل"
     return render_template_string(HTML, state=bot_state, msg=m)
 
 @app.route("/ping")

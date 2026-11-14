@@ -9,7 +9,7 @@ PASS = os.environ.get("BOT_PASSWORD", "")
 KEY = os.environ.get("GEMINI_API_KEY", "")
 SEC = os.environ.get("ADMIN_SECRET", "12345")
 
-DEF_R = os.environ.get("MY_ROOM_ID", "").replace("room-", "").strip()
+DEF_R = os.environ.get("MY_ROOM_ID", "").split("room-")[-1].strip()
 if KEY:
     genai.configure(api_key=KEY)
     ai = genai.GenerativeModel("gemini-1.5-flash")
@@ -18,13 +18,13 @@ else:
 
 rooms = {DEF_R: {"dj": False, "shield": False, "host": "", "oid": "", "mods": [], "song": "لا يوجد", "q": []}} if DEF_R else {}
 members = {}
-state = {"log": "جاري الاتصال بالسيرفر...", "welcome": "🌟 !Welcome {user} to the room"}
+state = {"log": "جاري الاتصال بالسيرفر...", "welcome": "✨ Welcome {user} to the room"}
 
 def yt(q):
     try:
         with yt_dlp.YoutubeDL({"format": "bestaudio", "noplaylist": True, "quiet": True}) as y:
             e = y.extract_info(f"ytsearch1:{q}", download=False).get("entries", [])
-            return (e["title"], e["webpage_url"]) if e else (None, None)
+            return (e[0]["title"], e[0]["webpage_url"]) if e else (None, None)
     except Exception:
         return None, None
 
@@ -32,7 +32,7 @@ def ask_smart_ai(uname, text):
     if not ai:
         return "مفتاح الذكاء الاصطناعي غير مفعل."
     try:
-        prompt = f"أنت بوت ذكي وودود في غرفة IMVU. اللاعب ({uname}) يقول: '{text}'. رد بالعربية باختصار ولباقة (سطرين كحد أقصى):"
+        prompt = f"أنت بوت ذكي وودود في غرفة IMVU. اللاعب {uname} يقول: '{text}'. رد بالعربية باختصار ولباقة (سطرين كحد أقصى)."
         return ai.generate_content(prompt).text.strip()
     except Exception:
         return "تسلم يا غالي! 🌹"
@@ -62,8 +62,9 @@ class Bot:
             d = r.json()
             if d.get("status") == "success":
                 u = d["denormalized"][d["id"]]["data"]
-                state["log"] = f"متصل وجاهز بالروم (CID: {u['user']['id']})"
-                return str(u["user"]["id"]), u["sauce"]
+                cid = str(u["user"]["id"])
+                state["log"] = f"متصل وجاهز بالروم (CID: {cid})"
+                return cid, u["sauce"]
             state["log"] = d.get("message", "تحقق من اسم المستخدم وكلمة المرور")
         except Exception as e:
             state["log"] = f"خطأ اتصال: {e}"
@@ -76,7 +77,7 @@ class Bot:
                 await asyncio.sleep(600)
                 continue
             if not cid:
-                await asyncio.sleep(120)
+                await asyncio.sleep(60)
                 continue
             try:
                 async with websockets.connect("wss://://imvu.com") as ws:
@@ -84,6 +85,14 @@ class Bot:
                     await asyncio.sleep(1)
                     joined = set()
                     while True:
+                        # الخروج من الغرف القديمة التي تم حذفها
+                        for old_r in list(joined):
+                            if old_r not in rooms:
+                                await ws.send(json.dumps({"type": "imq_leave", "channel": f"imvu:room:{old_r}"}))
+                                joined.remove(old_r)
+                                members.pop(old_r, None)
+
+                        # الدخول للغرفة الجديدة وإرسال طلب الصداقة
                         for rid, cfg in list(rooms.items()):
                             if rid not in joined:
                                 await ws.send(json.dumps({"type": "imq_join", "channel": f"imvu:room:{rid}"}))
@@ -91,58 +100,74 @@ class Bot:
                                 members.setdefault(rid, {})
                                 if cfg.get("oid"):
                                     try:
-                                        self.s.post(f"https://imvu.com{cid}/friends", json={"id": f"https://imvu.com{cfg['oid']}"})
+                                        self.s.post(f"https://imvu.com{cid}/friends", json={"id": f"https://imvu.com{cfg['oid']}"}, timeout=10)
                                     except Exception:
                                         pass
-                                await ws.send(json.dumps({"type": "imq_send", "channel": f"imvu:room:{rid}", "message": "🎵 البوت الذكي متصل وجاهز!"}))
+                                await ws.send(json.dumps({"type": "imq_send", "channel": f"imvu:room:{rid}", "message": "🎵 تم تفعيل بوت الموسيقى بنجاح!"}))
+
                         try:
-                            m = json.loads(await asyncio.wait_for(ws.recv(), timeout=3.0))
+                            m = json.loads(await asyncio.wait_for(ws.recv(), timeout=2.0))
                         except asyncio.TimeoutError:
                             continue
-                        ch, uid = m.get("channel", ""), str(m.get("user_id", ""))
+
+                        ch = m.get("channel", "")
+                        uid = str(m.get("user_id", ""))
                         rid = ch.replace("imvu:room:", "") if ch.startswith("imvu:room:") else ""
                         uname = str(m.get("username", uid))
                         if not rid or not uid or uid == cid:
                             continue
+
                         members.setdefault(rid, {})[uid] = uname
                         cfg = rooms.get(rid, {})
+
                         if m.get("type") in ["imq_user_join", "imq_join"]:
                             if cfg.get("shield") and uname.lower().startswith("guest_"):
                                 await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": f"🛡️ حظر الوهمي {uname}"}))
                                 continue
                             await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": state["welcome"].replace("{user}", uname)}))
+
                         txt = m.get("message", "").strip()
                         if not txt:
                             continue
 
-                        if txt.startswith(("!play ", "!شغل ")):
-                            if cfg.get("dj") and uname.lower() not in [cfg.get("host", "").lower()] + cfg.get("mods", []):
+                        is_admin = uname.lower() in [cfg.get("host", "").lower()] + [x.lower() for x in cfg.get("mods", [])]
+
+                        if txt in ["بوت اخرج", "!leave", "اخرج"] and is_admin:
+                            await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": "👋 جاري المغادرة بطلب من الهوست..."}))
+                            await ws.send(json.dumps({"type": "imq_leave", "channel": ch}))
+                            rooms.pop(rid, None)
+                            joined.discard(rid)
+                            continue
+
+                        if txt.startswith(("!play ", "شغل ")):
+                            if cfg.get("dj") and not is_admin:
                                 continue
-                            t, u = yt(txt.split(" ", 1))
+                            q_name = txt.split(" ", 1)[1]
+                            t, u = yt(q_name)
                             if t:
                                 cfg["song"] = t
                                 cfg.setdefault("q", []).append(t)
-                            await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": f"🎶 {t} | {u}" if t else "❌ لم أجدها"}))
-                        elif txt in ["!next", "!تخطي"] and len(cfg.get("q", [])) > 1:
+                                await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": f"🎵 {t} | {u}"}))
+                        elif txt in ["!next", "تخطي"] and len(cfg.get("q", [])) > 1:
                             cfg["q"].pop(0)
-                            cfg["song"] = cfg["q"]
+                            cfg["song"] = cfg["q"][0]
                             await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": f"⏭️ التالي: {cfg['song']}"}))
-                        elif txt in ["!queue", "!انتظار"]:
+                        elif txt in ["!queue", "الانتظار"]:
                             ql = " | ".join(cfg.get("q", [])[:5]) or "فارغة"
                             await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": f"📜 الانتظار: {ql}"}))
-                        elif txt in ["!stop", "!وقف"]:
+                        elif txt in ["!stop", "وقف"]:
                             cfg["song"] = "متوقف"
                             await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": "⏹️ تم الإيقاف"}))
                         elif txt.startswith(("!hug", "!kiss")):
-                            tg = txt.split(" ", 1) if " " in txt else "الجميع"
+                            tg = txt.split(" ", 1)[1] if " " in txt else "الجميع"
                             ac = "حضن دافئ لـ" if txt.startswith("!hug") else "قبلة لـ"
-                            await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": f"💖 {uname} أرسل {ac} {tg}!"}))
+                            await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": f"❤️ {uname} أرسل {ac} {tg}"}))
                         elif any(w in txt.lower() for w in ["بوت", "bot", "؟", "?"]):
                             ans = ask_smart_ai(uname, txt)
                             await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": ans}))
-            except Exception:
-                state["log"] = "إعادة الاتصال..."
-                await asyncio.sleep(60)
+            except Exception as e:
+                state["log"] = f"إعادة الاتصال... ({e})"
+                await asyncio.sleep(30)
 
 def start_bg():
     asyncio.run(Bot().run())
@@ -160,35 +185,19 @@ def add():
         return render_template("index.html", state=state, rooms=rooms, members=members, msg="❌ كلمة السر خطأ")
     r = request.form.get("r", "").split("room-")[-1].strip()
     if r:
-        rooms.clear()  # هذا السطر يحذف الروم القديم تلقائياً قبل إضافة الجديد
+        rooms.clear()
         rooms[r] = {
             "dj": "dj" in request.form,
             "shield": "shield" in request.form,
             "oid": request.form.get("oid", "").strip(),
             "host": request.form.get("host", "").strip(),
-            "mods": [m.strip() for m in request.form.get("mods", "").split(",") if m.strip()]
+            "mods": [m.strip() for m in request.form.get("mods", "").split(",") if m.strip()],
+            "song": "لا يوجد",
+            "q": []
         }
     return render_template("index.html", state=state, rooms=rooms, members=members, msg=f"✅ تم تفعيل الروم {r}")
-
 
 @app.route("/welcome", methods=["POST"])
 def welcome():
     if request.form.get("s") != SEC:
-        return render_template("index.html", state=state, rooms=rooms, members=members, msg="⛔ كلمة سر خاطئة")
-    state["welcome"] = request.form.get("w", state["welcome"])
-    return render_template("index.html", state=state, rooms=rooms, members=members, msg="✅ تم حفظ الترحيب")
-
-@app.route("/kick", methods=["POST"])
-def kick():
-    r, u = request.form.get("r", ""), request.form.get("u", "")
-    if r in members:
-        members[r].pop(u, None)
-    return render_template("index.html", state=state, rooms=rooms, members=members, msg="تم إرسال الطرد")
-
-@app.route("/ping")
-def ping():
-    return "OK", 200
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
-        
+        return render_template("index.html", state=state, rooms=rooms, members=members, msg="❌ كلمة سر خاطئة")

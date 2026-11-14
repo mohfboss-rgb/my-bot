@@ -1,6 +1,6 @@
-requests
-aiohttp
-websockets
-google-generativeai
-yt-dlp
 flask
+gunicorn
+requests
+websockets
+yt-dlp
+google-genai

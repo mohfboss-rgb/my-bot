@@ -1,6 +1,5 @@
 import os, json, time, asyncio, threading, requests, websockets
 from flask import Flask, request, render_template
-from google import genai
 import yt_dlp
 
 app = Flask(__name__)
@@ -14,7 +13,6 @@ WS_URL = "wss://" + "imq.imvu" + ".com:443/"
 API_BASE = "https://" + "api.imvu" + ".com"
 
 DEF_R = os.environ.get("MY_ROOM_ID", "").split("room-")[-1].strip()
-client = genai.Client(api_key=KEY) if KEY else None
 
 rooms = {DEF_R: {"dj": False, "shield": False, "host": "", "oid": "", "mods": [], "song": "لا يوجد", "q": []}} if DEF_R else {}
 members = {}
@@ -24,19 +22,21 @@ def yt(q):
     try:
         with yt_dlp.YoutubeDL({"format": "bestaudio", "noplaylist": True, "quiet": True}) as y:
             e = y.extract_info(f"ytsearch1:{q}", download=False).get("entries", [])
-            return (e[0]["title"], e[0]["webpage_url"]) if e else (None, None)
+            return (e["title"], e["webpage_url"]) if e else (None, None)
     except Exception:
         return None, None
 
 def ask_smart_ai(uname, text):
-    if not client:
+    if not KEY:
         return "أهلاً بك يا غالي! 🌹"
     try:
-        prompt = f"أنت بوت موسيقى وذكاء اصطناعي مرح في غرفة IMVU. اللاعب {uname} يقول: '{text}'. رد عليه بالعربية باختصار ولباقة (سطرين كحد أقصى)."
-        res = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
-        return res.text.strip()
+        url = f"https://googleapis.com{KEY}"
+        payload = {"contents": [{"parts": [{"text": f"أنت بوت موسيقى مرح في غرفة IMVU. اللاعب {uname} يقول: '{text}'. رد بالعربية باختصار ولباقة (سطرين كحد أقصى)."}]}]}
+        r = requests.post(url, json=payload, timeout=10)
+        return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
     except Exception:
         return "تسلم يا غالي! 🌹"
+
 
 class Bot:
     def __init__(self):

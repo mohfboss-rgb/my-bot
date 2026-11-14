@@ -31,7 +31,7 @@ def ask_smart_ai(uname, text):
         return "أهلاً بك يا غالي! 🌹"
     try:
                 url = "https://" + "generativelanguage.googleapis" + f".com/v1beta/models/gemini-2.5-flash:generateContent?key={KEY}"
-payload = {"contents": [{"parts": [{"text": f"أنت بوت موسيقى مرح في غرفة IMVU. اللاعب {uname} يقول: '{text}'. رد بالعربية باختصار ولباقة (سطرين كحد أقصى)."}]}]}
+                payload = {"contents": [{"parts": [{"text": f"أنت بوت موسيقى مرح في غرفة IMVU. اللاعب {uname} يقول: '{text}'. رد بالعربية باختصار ولباقة (سطرين كحد أقصى)."}]}]}
         r = requests.post(url, json=payload, timeout=10)
         return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
     except Exception:

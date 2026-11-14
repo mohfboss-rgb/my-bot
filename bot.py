@@ -52,7 +52,8 @@ class Bot:
             r = self.s.post("https://imvu.com", json={"username": USER, "password": PASS, "gdpr_cookie_consent": True}, timeout=15)
             if r.status_code == 429:
                 state["log"] = "حظر مؤقت 429 - سينتظر البوت 10 دقائق تلقائياً"
-                return "429", None
+                            r = self.s.post("https://imvu.com", json={"username": USER, "password": PASS, "gdpr_cookie_consent": True}, timeout=15)
+                
             if not r.text.strip().startswith("{"):
                 state["log"] = f"حماية السيرفر (كود {r.status_code}) - سيحاول البوت تلقائياً"
                 return None, None

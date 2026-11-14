@@ -4,218 +4,136 @@ import google.generativeai as genai
 import yt_dlp
 
 app = Flask(__name__)
+USER = os.environ.get("BOT_USERNAME", "")
+PASS = os.environ.get("BOT_PASSWORD", "")
+KEY = os.environ.get("GEMINI_API_KEY", "")
+SEC = os.environ.get("ADMIN_SECRET", "12345")
+DEF_R = os.environ.get("MY_ROOM_ID", "").split("room-")[-1].split("-")[0].strip()
 
-BOT_USERNAME = os.environ.get("BOT_USERNAME", "")
-BOT_PASSWORD = os.environ.get("BOT_PASSWORD", "")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-ADMIN_SECRET = os.environ.get("ADMIN_SECRET", "12345")
-DEFAULT_ROOM = os.environ.get("MY_ROOM_ID", "")
+if KEY:
+    genai.configure(api_key=KEY)
+    ai = genai.GenerativeModel("gemini-1.5-flash")
+else:
+    ai = None
 
-ai_model = None
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    ai_model = genai.GenerativeModel("gemini-1.5-flash")
+rooms = {DEF_R: {"dj": False, "host": "", "mods": [], "song": "لا يوجد"}} if DEF_R else {}
+members = {}
+state = {"log": "جاري الاتصال..."}
 
-def clean_id(raw):
-    v = str(raw).strip()
-    if "room-" in v:
-        v = v.split("room-")[-1].split("-")
-    return v
-
-rooms_db = {}
-room_members = {}
-custom_replies = {"هلا": "هلا بك منور الروم يا {user} 🌹"}
-
-if DEFAULT_ROOM:
-    r0 = clean_id(DEFAULT_ROOM)
-    if r0:
-        rooms_db[r0] = {
-            "active": True, "dj": False, "host": "", "mods": [],
-            "welcome": True, "wmsg": "🌟 Welcome {user}!",
-            "shield": False, "song": "لا يوجد"
-        }
-
-state = {"ok": False, "log": "جاري الاتصال..."}
-
-def yt_search(q):
+def yt(q):
     try:
-        opts = {"format": "bestaudio", "noplaylist": True, "quiet": True}
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            res = ydl.extract_info(f"ytsearch1:{q}", download=False).get("entries", [])
-            if res:
-                return res.get("title", q), res.get("webpage_url", "")
+        with yt_dlp.YoutubeDL({"format": "bestaudio", "noplaylist": True, "quiet": True}) as y:
+            e = y.extract_info(f"ytsearch1:{q}", download=False).get("entries", [])
+            return (e[0]["title"], e[0]["webpage_url"]) if e else (None, None)
     except Exception:
-        pass
-    return None, None
+        return None, None
 
-def ask_ai(p):
-    if not ai_model:
-        return "مفتاح الذكاء الاصطناعي غير مضاف."
-    try:
-        r = ai_model.generate_content("أنت بوت ذكي في IMVU. رد بالعربية باختصار: " + p)
-        return r.text.strip()
-    except Exception:
-        return "حاول مرة أخرى."
-
-def allowed(rid, user):
-    cfg = rooms_db.get(rid)
-    if not cfg or not cfg["active"]:
-        return False
-    if not cfg["dj"]:
-        return True
-    ok_list = [cfg["host"].lower()] + [m.lower() for m in cfg["mods"]]
-    return user.lower() in ok_list
-
-class BotClient:
+class Bot:
     def __init__(self):
         self.s = requests.Session()
-        self.s.headers.update({
-            "User-Agent": "IMVU/9.12.0 (Android 13) okhttp/4.11.0",
-            "Accept": "application/json",
-            "Content-Type": "application/json"
-        })
-        self.cid = None
-        self.sauce = None
+        self.s.headers.update({"User-Agent": "IMVU/9.12.0 (Android 13)", "Content-Type": "application/json"})
 
     def login(self):
-        if not BOT_USERNAME or not BOT_PASSWORD:
+        if not USER or not PASS:
             state["log"] = "بيانات الحساب ناقصة في Render"
-            return False
+            return None, None
         try:
-            payload = {"username": BOT_USERNAME, "password": BOT_PASSWORD}
-            r = self.s.post("https://imvu.com", json=payload, timeout=15)
+            r = self.s.post("https://imvu.com", json={"username": USER, "password": PASS}, timeout=15)
             if r.status_code == 429:
-                state["log"] = "حظر مؤقت (429) - سينتظر 10 دقائق"
-                return "429"
-            if not r.text.strip().startswith("{"):
-                state["log"] = f"رد غير متوقع ({r.status_code})"
-                return False
+                state["log"] = "حظر مؤقت 429 - سينتظر البوت 10 دقائق"
+                return "429", None
             d = r.json()
             if d.get("status") == "success":
                 u = d["denormalized"][d["id"]]["data"]
-                self.cid, self.sauce = str(u["user"]["id"]), u["sauce"]
-                state["ok"] = True
-                state["log"] = f"متصل بالروم (CID: {self.cid})"
-                return True
-            state["log"] = d.get("message", "تحقق من الحساب")
-            return False
+                state["log"] = f"متصل بنجاح! (ID: {u['user']['id']})"
+                return str(u["user"]["id"]), u["sauce"]
+            state["log"] = d.get("message", "خطأ في بيانات الحساب")
         except Exception as e:
             state["log"] = f"خطأ: {e}"
-            return False
+        return None, None
 
     async def run(self):
-        st = self.login()
-        if st == "429":
-            await asyncio.sleep(600)
-            return
-        if not st:
-            return
-        try:
-            async with websockets.connect("wss://://imvu.com") as ws:
-                auth = {"type": "imq_connect", "user_id": self.cid, "sauce": self.sauce}
-                await ws.send(json.dumps(auth))
-                await asyncio.sleep(1)
-                joined = set()
-                while True:
-                    for rid, cfg in list(rooms_db.items()):
-                        if cfg["active"] and rid not in joined:
-                            ch = f"imvu:room:{rid}"
-                            await ws.send(json.dumps({"type": "imq_join", "channel": ch}))
-                            joined.add(rid)
-                            room_members.setdefault(rid, {})
-                            msg_hi = {"type": "imq_send", "channel": ch, "message": "🎵 البوت متصل!"}
-                            await ws.send(json.dumps(msg_hi))
-                    try:
-                        raw = await asyncio.wait_for(ws.recv(), timeout=3.0)
-                    except asyncio.TimeoutError:
-                        continue
-                    msg = json.loads(raw)
-                    mt = msg.get("type", "")
-                    ch = msg.get("channel", "")
-                    rid = ch.replace("imvu:room:", "") if ch.startswith("imvu:room:") else ""
-                    uid = str(msg.get("user_id", ""))
-                    uname = str(msg.get("username", uid))
-                    if not rid or not uid or uid == self.cid:
-                        continue
-                    room_members.setdefault(rid, {})
-                    cfg = rooms_db.get(rid, {})
-                    if mt in ["imq_user_join", "imq_join"] and uid not in room_members[rid]:
-                        room_members[rid][uid] = uname
-                        if cfg.get("shield") and uname.lower().startswith("guest_"):
-                            m = {"type": "imq_send", "channel": ch, "message": f"🛡️ حظر {uname}"}
-                            await ws.send(json.dumps(m))
+        while True:
+            cid, sauce = self.login()
+            if cid == "429":
+                await asyncio.sleep(600)
+                continue
+            if not cid:
+                await asyncio.sleep(60)
+                continue
+            try:
+                async with websockets.connect("wss://://imvu.com") as ws:
+                    await ws.send(json.dumps({"type": "imq_connect", "user_id": cid, "sauce": sauce}))
+                    await asyncio.sleep(1)
+                    joined = set()
+                    while True:
+                        for rid, cfg in list(rooms.items()):
+                            if rid not in joined:
+                                await ws.send(json.dumps({"type": "imq_join", "channel": f"imvu:room:{rid}"}))
+                                joined.add(rid)
+                                members.setdefault(rid, {})
+                                await ws.send(json.dumps({"type": "imq_send", "channel": f"imvu:room:{rid}", "message": "🎵 البوت متصل!"}))
+                        try:
+                            m = json.loads(await asyncio.wait_for(ws.recv(), timeout=3.0))
+                        except asyncio.TimeoutError:
                             continue
-                        if cfg.get("welcome"):
-                            wt = cfg.get("wmsg", "Welcome {user}").replace("{user}", uname)
-                            await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": wt}))
-                    elif mt in ["imq_user_leave", "imq_leave"]:
-                        room_members[rid].pop(uid, None)
-                    else:
-                        room_members[rid][uid] = uname
+                        ch, uid = m.get("channel", ""), str(m.get("user_id", ""))
+                        rid = ch.replace("imvu:room:", "") if ch.startswith("imvu:room:") else ""
+                        uname = str(m.get("username", uid))
+                        if not rid or not uid or uid == cid:
+                            continue
+                        members.setdefault(rid, {})[uid] = uname
+                        if m.get("type") in ["imq_user_join", "imq_join"]:
+                            await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": f"🌟 Welcome {uname}!"}))
+                        txt = m.get("message", "").strip()
+                        cfg = rooms.get(rid, {})
+                        if not txt or (cfg.get("dj") and uname.lower() not in [cfg.get("host", "").lower()] + cfg.get("mods", [])):
+                            continue
+                        if txt.startswith(("!play ", "!شغل ")):
+                            t, u = yt(txt.split(" ", 1)[1])
+                            cfg["song"] = t or cfg["song"]
+                            await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": f"🎶 {t} | {u}" if t else "❌ لم أجدها"}))
+                        elif txt.startswith(("!بوت ", "بوت ")) and ai:
+                            ans = ai.generate_content("رد بالعربية باختصار: " + txt.split(" ", 1)[1]).text.strip()
+                            await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": ans}))
+            except Exception:
+                state["log"] = "إعادة الاتصال..."
+                await asyncio.sleep(30)
 
-                    txt = msg.get("message", "").strip()
-                    if not txt:
-                        continue
-                    for k, v in custom_replies.items():
-                        if k in txt:
-                            rep = v.replace("{user}", uname)
-                            await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": rep}))
-                            break
-                    if not allowed(rid, uname):
-                        continue
-                    if txt.startswith("!play ") or txt.startswith("!شغل "):
-                        q = txt.split(" ", 1).strip()
-                        t, u = yt_search(q)
-                        if t:
-                            cfg["song"] = t
-                            out = f"🎶 {t} | {u}"
-                        else:
-                            out = "❌ لم أجد الأغنية."
-                        await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": out}))
-                    elif txt.startswith("!stop") or txt.startswith("!وقف"):
-                        cfg["song"] = "متوقف"
-                        await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": "⏹️ تم الإيقاف"}))
-                    elif txt.startswith("!بوت ") or txt.startswith("بوت "):
-                        ans = ask_ai(txt.split(" ", 1).strip())
-                        await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": ans}))
-        except Exception:
-            state["ok"] = False
-            state["log"] = "إعادة الاتصال..."
+threading.Thread(target=lambda: asyncio.run(Bot().run()), daemon=True).start()
 
-def loop_worker():
-    lp = asyncio.new_event_loop()
-    asyncio.set_event_loop(lp)
-    b = BotClient()
-    while True:
-        lp.run_until_complete(b.run())
-        time.sleep(60)
-
-threading.Thread(target=loop_worker, daemon=True).start()
-
-PAGE = """<!DOCTYPE html><html dir="rtl"><head><meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<style>
-body{font-family:Tahoma;background:#090d16;color:#fff;text-align:center;padding:10px}
-.box{background:#131b2e;border:1px solid #1e293b;border-radius:14px;padding:15px;max-width:450px;margin:10px auto}
+UI = """<!DOCTYPE html><html dir="rtl"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>body{font-family:Tahoma;background:#090d16;color:#fff;text-align:center;padding:10px}
+.b{background:#131b2e;padding:15px;border-radius:12px;max-width:420px;margin:10px auto}
 input,button{width:90%;padding:10px;margin:5px 0;border-radius:8px;border:none;background:#1e293b;color:#fff}
-button{background:#2563eb;font-weight:bold}
-.row{display:flex;justify-content:space-between;background:#0b101d;padding:8px;border-radius:8px;margin:5px 0}
-</style></head><body>
-<div class="box"><h2>🎵 لوحة تحكم البوت</h2><p>{{state.log}}</p>{% if msg %}<p style="color:#38bdf8">{{msg}}</p>{% endif %}</div>
-<div class="box"><h3>🎛️ إعدادات الروم</h3><form method="POST" action="/save">
-<input type="password" name="sec" placeholder="كلمة سر المالك" required>
-<input type="text" name="rid" placeholder="رقم الروم" required>
-<input type="text" name="host" placeholder="اسم الهوست">
-<input type="text" name="mods" placeholder="المشرفين بفاصلة">
-<input type="text" name="wmsg" value="🌟 Welcome {user}!">
-<div class="row"><span>🛡️ حماية الوهمي</span><input type="checkbox" name="sh" style="width:auto"></div>
-<div class="row"><span>🎧 DJ للمشرفين فقط</span><input type="checkbox" name="dj" style="width:auto"></div>
-<div class="row"><span>👋 ترحيب تلقائي</span><input type="checkbox" name="wl" checked style="width:auto"></div>
-<button>حفظ ودخول الروم</button></form></div>
-{% for rid, cfg in rooms.items() %}<div class="box"><h3>👥 المتواجدون ({{rid}})</h3>
-<p>🎶 {{cfg.song}}</p>{% for uid, un in members.get(rid, {}).items() %}
-<div class="row"><span>{{un}} ({{uid}})</span><form method="POST" action="/kick" style="margin:0">
-<input type="hidden" name="rid" value="{{rid}}"><input type="hidden" name="uid" value="{{uid}}">
-<button style="background:#dc2626;padding:5px 10px;width:auto">طرد</button></form></div>
-{% endfor %}</div>{% endfor %}
-                
+button{background:#2563eb;font-weight:bold}</style></head><body>
+<div class="b"><h2>🎵 لوحة البوت</h2><p>{{state.log}}</p>{% if msg %}<p style="color:#38bdf8">{{msg}}</p>{% endif %}</div>
+<div class="b"><form method="POST" action="/add">
+<input type="password" name="s" placeholder="كلمة سر المالك" required>
+<input type="text" name="r" placeholder="رقم الروم" required>
+<input type="text" name="h" placeholder="اسم الهوست">
+<input type="text" name="m" placeholder="المشرفين بفاصلة">
+<label><input type="checkbox" name="dj" style="width:auto"> وضع VIP (للمشرفين فقط)</label>
+<button>تفعيل ودخول الروم</button></form></div>
+{% for r, c in rooms.items() %}<div class="b"><h3>👥 المتواجدون ({{r}})</h3><p>🎶 {{c.song}}</p>
+{% for u, n in members.get(r, {}).items() %}<p>{{n}} ({{u}})</p>{% endfor %}</div>{% endfor %}</body></html>"""
+
+@app.route("/")
+def index():
+    return render_template_string(UI, state=state, rooms=rooms, members=members, msg=None)
+
+@app.route("/add", methods=["POST"])
+def add():
+    if request.form.get("s") != SEC:
+        return render_template_string(UI, state=state, rooms=rooms, members=members, msg="⛔ كلمة سر خاطئة")
+    r = request.form.get("r", "").split("room-")[-1].split("-")[0].strip()
+    if r:
+        rooms[r] = {"dj": "dj" in request.form, "host": request.form.get("h", "").strip(), "mods": [x.strip().lower() for x in request.form.get("m", "").split(",") if x.strip()], "song": "لا يوجد"}
+    return render_template_string(UI, state=state, rooms=rooms, members=members, msg=f"✅ تم تفعيل {r}")
+
+@app.route("/ping")
+def ping():
+    return "OK", 200
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))

@@ -157,12 +157,19 @@ def index():
 @app.route("/add", methods=["POST"])
 def add():
     if request.form.get("s") != SEC:
-        return render_template("index.html", state=state, rooms=rooms, members=members, msg="⛔ كلمة سر خاطئة")
+        return render_template("index.html", state=state, rooms=rooms, members=members, msg="❌ كلمة السر خطأ")
     r = request.form.get("r", "").split("room-")[-1].strip()
-
     if r:
-        rooms[r] = {"dj": "dj" in request.form, "shield": "shield" in request.form, "oid": request.form.get("oid", "").strip(), "host": request.form.get("h", "").strip(), "mods": [x.strip().lower() for x in request.form.get("m", "").split(",") if x.strip()], "song": "لا يوجد", "q": []}
+        rooms.clear()  # هذا السطر يحذف الروم القديم تلقائياً قبل إضافة الجديد
+        rooms[r] = {
+            "dj": "dj" in request.form,
+            "shield": "shield" in request.form,
+            "oid": request.form.get("oid", "").strip(),
+            "host": request.form.get("host", "").strip(),
+            "mods": [m.strip() for m in request.form.get("mods", "").split(",") if m.strip()]
+        }
     return render_template("index.html", state=state, rooms=rooms, members=members, msg=f"✅ تم تفعيل الروم {r}")
+
 
 @app.route("/welcome", methods=["POST"])
 def welcome():

@@ -199,3 +199,20 @@ def add():
         rooms[r] = {
             "dj": "dj" in request.form,
             "shield": "shield" in request.form,
+            "oid": request.form.get("oid", "").strip(),
+            "host": request.form.get("host", "").strip(),
+            "mods": [m.strip() for m in request.form.get("mods", "").split(",") if m.strip()],
+            "song": "لا يوجد",
+            "q": []
+        }
+    return render_template("index.html", state=state, rooms=rooms, members=members, msg=f"✅ تم تفعيل الروم {r}")
+
+@app.route("/welcome", methods=["POST"])
+def welcome():
+    if request.form.get("s") != SEC:
+        return render_template("index.html", state=state, rooms=rooms, members=members, msg="❌ كلمة سر خاطئة")
+    state["welcome"] = request.form.get("w", state["welcome"])
+    return render_template("index.html", state=state, rooms=rooms, members=members, msg="✅ تم التحديث")
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port, debug=False)

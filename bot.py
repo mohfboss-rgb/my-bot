@@ -8,10 +8,9 @@ PASS = os.environ.get("BOT_PASSWORD", "")
 KEY = os.environ.get("GEMINI_API_KEY", "")
 SEC = os.environ.get("ADMIN_SECRET", "12345")
 
-LOGIN_URL = "https://" + "api.imvu" + ".com/login"
-WS_URL = "wss://" + "imq.imvu" + ".com:443/"
-API_BASE = "https://" + "api.imvu" + ".com"
-
+LOGIN_URL = "https://imvu.com"
+WS_URL = "wss://://imvu.com"
+API_BASE = "https://imvu.com"
 DEF_R = os.environ.get("MY_ROOM_ID", "").split("room-")[-1].strip()
 
 rooms = {DEF_R: {"dj": False, "shield": False, "host": "", "oid": "", "mods": [], "song": "لا يوجد", "q": []}} if DEF_R else {}
@@ -22,7 +21,7 @@ def yt(q):
     try:
         with yt_dlp.YoutubeDL({"format": "bestaudio", "noplaylist": True, "quiet": True}) as y:
             e = y.extract_info(f"ytsearch1:{q}", download=False).get("entries", [])
-            return (e["title"], e["webpage_url"]) if e else (None, None)
+            return (e[0]["title"], e[0]["webpage_url"]) if e else (None, None)
     except Exception:
         return None, None
 
@@ -30,13 +29,12 @@ def ask_smart_ai(uname, text):
     if not KEY:
         return "أهلاً بك يا غالي! 🌹"
     try:
-                url = "https://" + "generativelanguage.googleapis" + f".com/v1beta/models/gemini-2.5-flash:generateContent?key={KEY}"
-                payload = {"contents": [{"parts": [{"text": f"أنت بوت موسيقى مرح في غرفة IMVU. اللاعب {uname} يقول: '{text}'. رد بالعربية باختصار ولباقة (سطرين كحد أقصى)."}]}]}
-                r = requests.post(url, json=payload, timeout=10)
-                return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+        url = f"https://googleapis.com{KEY}"
+        payload = {"contents": [{"parts": [{"text": f"أنت بوت موسيقى مرح في غرفة IMVU. اللاعب {uname} يقول: '{text}'. رد بالعربية باختصار ولباقة (سطرين كحد أقصى)."}]}]}
+        r = requests.post(url, json=payload, timeout=10)
+        return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
     except Exception:
         return "تسلم يا غالي! 🌹"
-
 
 class Bot:
     def __init__(self):
@@ -53,12 +51,11 @@ class Bot:
             state["log"] = "بيانات الحساب ناقصة في Render"
             return None, None
         try:
-           r = self.s.post(LOGIN_URL, json={"username": USER, "password": PASS}, timeout=15)
-
-          if r.status_code == 429:
+            r = self.s.post(LOGIN_URL, json={"username": USER, "password": PASS}, timeout=15)
+            if r.status_code == 429:
                 state["log"] = "حظر مؤقت 429 - سينتظر البوت 10 دقائق تلقائياً"
                 return "429", None
-          if not r.text.strip().startswith("{"):
+            if not r.text.strip().startswith("{"):
                 state["log"] = f"حماية السيرفر (كود {r.status_code}) - سيحاول البوت تلقائياً"
                 return None, None
             d = r.json()
@@ -69,7 +66,7 @@ class Bot:
                 return cid, u["sauce"]
             state["log"] = d.get("message", "تحقق من اسم المستخدم وكلمة المرور")
         except Exception as e:
-                state["log"] = f"خطأ اتصال: {e}"
+            state["log"] = f"خطأ اتصال: {e}"
         return None, None
 
     async def run(self):
@@ -202,8 +199,3 @@ def welcome():
     if request.form.get("s") != SEC:
         return render_template("index.html", state=state, rooms=rooms, members=members, msg="❌ كلمة سر خاطئة")
     state["welcome"] = request.form.get("w", state["welcome"])
-    return render_template("index.html", state=state, rooms=rooms, members=members, msg="✅ تم التحديث")
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
-

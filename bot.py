@@ -5,12 +5,13 @@ import yt_dlp
 app = Flask(__name__)
 USER = os.environ.get("BOT_USERNAME", "")
 PASS = os.environ.get("BOT_PASSWORD", "")
+COOKIE = os.environ.get("IMVU_COOKIE", "")
 KEY = os.environ.get("GEMINI_API_KEY", "")
 SEC = os.environ.get("ADMIN_SECRET", "12345")
 
 LOGIN_URL = "https://imvu.com"
 WS_URL = "wss://://imvu.com"
-API_BASE = "https://imvu.com"
+API_BASE = "https://api.imvu.com"
 DEF_R = os.environ.get("MY_ROOM_ID", "").split("room-")[-1].strip()
 
 rooms = {DEF_R: {"dj": False, "shield": False, "host": "", "oid": "", "mods": [], "song": "لا يوجد", "q": []}} if DEF_R else {}
@@ -40,23 +41,37 @@ class Bot:
     def __init__(self):
         self.s = requests.Session()
         self.s.headers.update({
-            "User-Agent": "IMVU/9.12.0 (Android 13; SM-S918B) okhttp/4.11.0",
+            "User-Agent": "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
             "Accept": "application/json",
-            "Content-Type": "application/json",
-            "X-IMVU-Application": "imvu_mobile_android"
+            "Content-Type": "application/json"
         })
+        if COOKIE:
+            self.s.headers.update({"Cookie": COOKIE})
 
     def login(self):
-        if not USER or not PASS:
-            state["log"] = "بيانات الحساب ناقصة في Render"
-            return None, None
         try:
+            # المحاولة الأولى: الدخول عبر الكوكيز الجاهزة لتخطي الحماية
+            if COOKIE:
+                r = self.s.get(LOGIN_URL, timeout=15)
+                if r.text.strip().startswith("{"):
+                    d = r.json()
+                    if d.get("status") == "success":
+                        u = d["denormalized"][d["id"]]["data"]
+                        cid = str(u["user"]["id"])
+                        state["log"] = f"متصل بالكوكيز وجاهز (CID: {cid})"
+                        return cid, u["sauce"]
+
+            # المحاولة الثانية: تسجيل الدخول التقليدي بالاسم وكلمة المرور
+            if not USER or not PASS:
+                state["log"] = "بيانات الحساب أو الكوكيز ناقصة في Render"
+                return None, None
+
             r = self.s.post(LOGIN_URL, json={"username": USER, "password": PASS}, timeout=15)
             if r.status_code == 429:
                 state["log"] = "حظر مؤقت 429 - سينتظر البوت 10 دقائق تلقائياً"
                 return "429", None
             if not r.text.strip().startswith("{"):
-                state["log"] = f"حماية السيرفر (كود {r.status_code}) - سيحاول البوت تلقائياً"
+                state["log"] = f"حماية السيرفر (كود {r.status_code}) - أضف IMVU_COOKIE في Render"
                 return None, None
             d = r.json()
             if d.get("status") == "success":
@@ -184,24 +199,3 @@ def add():
     if r:
         rooms.clear()
         rooms[r] = {
-            "dj": "dj" in request.form,
-            "shield": "shield" in request.form,
-            "oid": request.form.get("oid", "").strip(),
-            "host": request.form.get("host", "").strip(),
-            "mods": [m.strip() for m in request.form.get("mods", "").split(",") if m.strip()],
-            "song": "لا يوجد",
-            "q": []
-        }
-    return render_template("index.html", state=state, rooms=rooms, members=members, msg=f"✅ تم تفعيل الروم {r}")
-
-@app.route("/welcome", methods=["POST"])
-def welcome():
-    if request.form.get("s") != SEC:
-        return render_template("index.html", state=state, rooms=rooms, members=members, msg="❌ كلمة سر خاطئة")
-    state["welcome"] = request.form.get("w", state["welcome"])
-    return render_template("index.html", state=state, rooms=rooms, members=members, msg="✅ تم التحديث")
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port, debug=False)
-

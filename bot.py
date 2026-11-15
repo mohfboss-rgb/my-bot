@@ -69,7 +69,7 @@ class Bot:
                 return cid, u["sauce"]
             state["log"] = d.get("message", "تحقق من اسم المستخدم وكلمة المرور")
         except Exception as e:
-            state["log"] = f"خطأ اتصال: {e}"
+                state["log"] = f"خطأ اتصال: {e}"
         return None, None
 
     async def run(self):

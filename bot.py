@@ -98,7 +98,7 @@ class Bot:
                 await asyncio.sleep(60)
                 continue
             try:
-                async with websockets.connect(WS_URL, extra_headers={"Origin": "https://imvu.com", "Cookie": COOKIE}) as ws:
+                async with websockets.connect(WS_URL) as ws:
                     await ws.send(json.dumps({"type": "imq_connect", "user_id": cid, "sauce": sauce}))
                     await asyncio.sleep(1)
                     joined = set()

@@ -22,7 +22,7 @@ def yt(q):
     try:
         with yt_dlp.YoutubeDL({"format": "bestaudio", "noplaylist": True, "quiet": True}) as y:
             e = y.extract_info(f"ytsearch1:{q}", download=False).get("entries", [])
-            return (e[0]["title"], e[0]["webpage_url"]) if e else (None, None)
+            return (e["title"], e["webpage_url"]) if e else (None, None)
     except Exception:
         return None, None
 
@@ -33,7 +33,7 @@ def ask_smart_ai(uname, text):
         base = "https://googleapis.com"
         payload = {"contents": [{"parts": [{"text": f"أنت بوت موسيقى مرح في غرفة IMVU. اللاعب {uname} يقول: '{text}'. رد بالعربية باختصار ولباقة (سطرين كحد أقصى)."}]}]}
         r = requests.post(base + KEY, json=payload, timeout=10)
-        return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+        return r.json()["candidates"]["content"]["parts"]["text"].strip()
     except Exception:
         return "تسلم يا غالي! 🌹"
 
@@ -42,26 +42,32 @@ class Bot:
         self.s = requests.Session()
         self.s.headers.update({
             "User-Agent": "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
-            "Accept": "application/json",
-            "Content-Type": "application/json"
+            "Accept": "application/json, text/plain, */*",
+            "Origin": "https://imvu.com",
+            "Referer": "https://imvu.com/next/home/"
         })
         if COOKIE:
             self.s.headers.update({"Cookie": COOKIE})
 
     def login(self):
         try:
+            # التحقق من الجلسة النشطة عبر الكوكيز من رابط ://imvu.com
             if COOKIE:
-                r = self.s.get(LOGIN_URL, timeout=15)
-                if r.text.strip().startswith("{"):
-                    d = r.json()
-                    if d.get("status") == "success":
-                        u = d["denormalized"][d["id"]]["data"]
-                        cid = str(u["user"]["id"])
-                        state["log"] = f"متصل بالكوكيز وجاهز (CID: {cid})"
-                        return cid, u["sauce"]
+                for check_url in ["https://://imvu.com/user/me", "https://://imvu.com/user/me", LOGIN_URL]:
+                    r = self.s.get(check_url, timeout=15)
+                    if r.text.strip().startswith("{"):
+                        d = r.json()
+                        if d.get("status") == "success":
+                            u = d["denormalized"][d["id"]]["data"]
+                            cid = str(u.get("user", {}).get("id") or d["id"].split("-")[-1])
+                            sauce = u.get("sauce", "")
+                            if sauce:
+                                self.s.headers.update({"x-imvu-sauce": sauce})
+                            state["log"] = f"متصل بالكوكيز وجاهز (CID: {cid})"
+                            return cid, sauce
 
             if not USER or not PASS:
-                state["log"] = "بيانات الحساب أو الكوكيز ناقصة في Render"
+                state["log"] = "حدث خطأ في قراءة الكوكيز - تأكد من تجديدها"
                 return None, None
 
             r = self.s.post(LOGIN_URL, json={"username": USER, "password": PASS}, timeout=15)
@@ -69,7 +75,7 @@ class Bot:
                 state["log"] = "حظر مؤقت 429 - سينتظر البوت 10 دقائق تلقائياً"
                 return "429", None
             if not r.text.strip().startswith("{"):
-                state["log"] = f"حماية السيرفر (كود {r.status_code}) - أضف IMVU_COOKIE في Render"
+                state["log"] = f"حماية السيرفر (كود {r.status_code}) - تأكد من صلاحية الكوكيز"
                 return None, None
             d = r.json()
             if d.get("status") == "success":
@@ -92,7 +98,7 @@ class Bot:
                 await asyncio.sleep(60)
                 continue
             try:
-                async with websockets.connect(WS_URL) as ws:
+                async with websockets.connect(WS_URL, extra_headers={"Origin": "https://imvu.com", "Cookie": COOKIE}) as ws:
                     await ws.send(json.dumps({"type": "imq_connect", "user_id": cid, "sauce": sauce}))
                     await asyncio.sleep(1)
                     joined = set()
@@ -152,7 +158,7 @@ class Bot:
                         if txt.startswith(("!play ", "شغل ")):
                             if cfg.get("dj") and not is_admin:
                                 continue
-                            q_name = txt.split(" ", 1)[1]
+                            q_name = txt.split(" ", 1)
                             t, u = yt(q_name)
                             if t:
                                 cfg["song"] = t
@@ -160,7 +166,7 @@ class Bot:
                                 await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": f"🎵 {t} | {u}"}))
                         elif txt in ["!next", "تخطي"] and len(cfg.get("q", [])) > 1:
                             cfg["q"].pop(0)
-                            cfg["song"] = cfg["q"][0]
+                            cfg["song"] = cfg["q"]
                             await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": f"⏭️ التالي: {cfg['song']}"}))
                         elif txt in ["!queue", "الانتظار"]:
                             ql = " | ".join(cfg.get("q", [])[:5]) or "فارغة"
@@ -169,7 +175,7 @@ class Bot:
                             cfg["song"] = "متوقف"
                             await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": "⏹️ تم الإيقاف"}))
                         elif txt.startswith(("!hug", "!kiss")):
-                            tg = txt.split(" ", 1)[1] if " " in txt else "الجميع"
+                            tg = txt.split(" ", 1) if " " in txt else "الجميع"
                             ac = "حضن دافئ لـ" if txt.startswith("!hug") else "قبلة لـ"
                             await ws.send(json.dumps({"type": "imq_send", "channel": ch, "message": f"❤️ {uname} أرسل {ac} {tg}"}))
                         elif any(w in txt.lower() for w in ["بوت", "bot", "؟", "?"]):
@@ -184,7 +190,6 @@ def start_bg():
 
 t = threading.Thread(target=start_bg, daemon=True)
 t.start()
-
 @app.route("/")
 def index():
     return render_template("index.html", state=state, rooms=rooms, members=members, msg=None)
@@ -213,6 +218,8 @@ def welcome():
         return render_template("index.html", state=state, rooms=rooms, members=members, msg="❌ كلمة سر خاطئة")
     state["welcome"] = request.form.get("w", state["welcome"])
     return render_template("index.html", state=state, rooms=rooms, members=members, msg="✅ تم التحديث")
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=False)
+    

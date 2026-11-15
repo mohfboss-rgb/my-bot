@@ -9,9 +9,9 @@ COOKIE = os.environ.get("IMVU_COOKIE", "")
 KEY = os.environ.get("GEMINI_API_KEY", "")
 SEC = os.environ.get("ADMIN_SECRET", "12345")
 
-LOGIN_URL = "https://imvu.com"
-WS_URL = "wss://://imvu.com"
-API_BASE = "https://imvu.com"
+LOGIN_URL = "https://api.imvu.com/login"
+WS_URL = "wss://imq.imvu.com/imq/ws"
+API_BASE = "https://api.imvu.com"
 DEF_R = os.environ.get("MY_ROOM_ID", "").split("room-")[-1].strip()
 
 rooms = {DEF_R: {"dj": False, "shield": False, "host": "", "oid": "", "mods": [], "song": "لا يوجد", "q": []}} if DEF_R else {}
@@ -53,7 +53,7 @@ class Bot:
         try:
             # التحقق من الجلسة النشطة عبر الكوكيز من رابط ://imvu.com
             if COOKIE:
-                for check_url in ["https://://imvu.com/user/me", "https://://imvu.com/user/me", LOGIN_URL]:
+                for check_url in [LOGIN_URL]:
                     r = self.s.get(check_url, timeout=15)
                     if r.text.strip().startswith("{"):
                         d = r.json()

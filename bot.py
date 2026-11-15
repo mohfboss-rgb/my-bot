@@ -55,10 +55,10 @@ class Bot:
         try:
            r = self.s.post(LOGIN_URL, json={"username": USER, "password": PASS}, timeout=15)
 
-           if r.status_code == 429:
+          if r.status_code == 429:
                 state["log"] = "حظر مؤقت 429 - سينتظر البوت 10 دقائق تلقائياً"
                 return "429", None
-            if not r.text.strip().startswith("{"):
+          if not r.text.strip().startswith("{"):
                 state["log"] = f"حماية السيرفر (كود {r.status_code}) - سيحاول البوت تلقائياً"
                 return None, None
             d = r.json()

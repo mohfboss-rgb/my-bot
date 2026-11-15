@@ -199,7 +199,7 @@ def welcome():
     if request.form.get("s") != SEC:
         return render_template("index.html", state=state, rooms=rooms, members=members, msg="❌ كلمة سر خاطئة")
     state["welcome"] = request.form.get("w", state["welcome"])
-        return render_template("index.html", state=state, rooms=rooms, members=members, msg="✅ تم التحديث")
+    return render_template("index.html", state=state, rooms=rooms, members=members, msg="✅ تم التحديث")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))

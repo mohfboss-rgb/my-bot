@@ -11,7 +11,7 @@ SEC = os.environ.get("ADMIN_SECRET", "12345")
 
 LOGIN_URL = "https://imvu.com"
 WS_URL = "wss://://imvu.com"
-API_BASE = "https://api.imvu.com"
+API_BASE = "https://imvu.com"
 DEF_R = os.environ.get("MY_ROOM_ID", "").split("room-")[-1].strip()
 
 rooms = {DEF_R: {"dj": False, "shield": False, "host": "", "oid": "", "mods": [], "song": "لا يوجد", "q": []}} if DEF_R else {}
@@ -30,9 +30,9 @@ def ask_smart_ai(uname, text):
     if not KEY:
         return "أهلاً بك يا غالي! 🌹"
     try:
-        url = f"https://googleapis.com{KEY}"
+        base = "https://googleapis.com"
         payload = {"contents": [{"parts": [{"text": f"أنت بوت موسيقى مرح في غرفة IMVU. اللاعب {uname} يقول: '{text}'. رد بالعربية باختصار ولباقة (سطرين كحد أقصى)."}]}]}
-        r = requests.post(url, json=payload, timeout=10)
+        r = requests.post(base + KEY, json=payload, timeout=10)
         return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
     except Exception:
         return "تسلم يا غالي! 🌹"
@@ -50,7 +50,6 @@ class Bot:
 
     def login(self):
         try:
-            # المحاولة الأولى: الدخول عبر الكوكيز الجاهزة لتخطي الحماية
             if COOKIE:
                 r = self.s.get(LOGIN_URL, timeout=15)
                 if r.text.strip().startswith("{"):
@@ -61,7 +60,6 @@ class Bot:
                         state["log"] = f"متصل بالكوكيز وجاهز (CID: {cid})"
                         return cid, u["sauce"]
 
-            # المحاولة الثانية: تسجيل الدخول التقليدي بالاسم وكلمة المرور
             if not USER or not PASS:
                 state["log"] = "بيانات الحساب أو الكوكيز ناقصة في Render"
                 return None, None
@@ -199,3 +197,5 @@ def add():
     if r:
         rooms.clear()
         rooms[r] = {
+            "dj": "dj" in request.form,
+            "shield": "shield" in request.form,
